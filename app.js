@@ -295,6 +295,7 @@ function addCandidate(data) {
     source: data.source || "후보",
     lookupStatus: "",
     lookupCandidates: [],
+    lookupDebug: null,
   });
 }
 
@@ -382,10 +383,33 @@ function renderLookupState(candidate) {
   }
 
   if (candidate.lookupStatus) {
-    return `<p class="lookup-status">${escapeHtml(candidate.lookupStatus)}</p>`;
+    return `
+      <p class="lookup-status">${escapeHtml(candidate.lookupStatus)}</p>
+      ${renderLookupDebug(candidate.lookupDebug)}
+    `;
   }
 
   return `<p class="lookup-status">OCR 후보를 확인한 뒤 원본 상품 정보 가져오기를 누르면, 서버 어댑터가 연결된 경우 실제 상품 사진과 정보를 후보로 표시합니다.</p>`;
+}
+
+function renderLookupDebug(debug) {
+  if (!debug?.queries?.length && !debug?.errors?.length) return "";
+  const queries = (debug.queries || [])
+    .map((entry) => `${entry.type}: ${entry.query}`)
+    .slice(0, 5)
+    .map((line) => `<li>${escapeHtml(line)}</li>`)
+    .join("");
+  const errors = (debug.errors || [])
+    .slice(0, 3)
+    .map((line) => `<li>${escapeHtml(line)}</li>`)
+    .join("");
+  return `
+    <details class="lookup-debug">
+      <summary>조회 로그</summary>
+      ${queries ? `<strong>검색어</strong><ul>${queries}</ul>` : ""}
+      ${errors ? `<strong>오류</strong><ul>${errors}</ul>` : ""}
+    </details>
+  `;
 }
 
 async function lookupProductInfo(id) {
@@ -397,11 +421,12 @@ async function lookupProductInfo(id) {
   renderQueue();
 
   try {
-    const results = await fetchProductLookup(candidate);
-    candidate.lookupCandidates = results;
-    candidate.lookupStatus = results.length
+    const payload = await fetchProductLookup(candidate);
+    candidate.lookupCandidates = payload.results;
+    candidate.lookupDebug = payload.debug;
+    candidate.lookupStatus = payload.results.length
       ? "가져온 후보 중 맞는 상품을 선택해 주세요."
-      : "일치하는 상품 후보를 찾지 못했어요. 상품명/브랜드를 조금 더 정확히 고쳐 다시 조회해보세요.";
+      : "일치하는 상품 후보를 찾지 못했어요. 아래 조회 로그의 검색어를 보고 상품명/브랜드를 조금 줄여 다시 조회해보세요.";
   } catch (error) {
     console.error(error);
     candidate.lookupStatus = error.message;
@@ -422,9 +447,14 @@ async function fetchProductLookup(candidate) {
     option: candidate.option || "",
   });
   const response = await fetch(`/api/product-lookup?${params.toString()}`);
-  if (!response.ok) throw new Error("상품 조회 서버에서 응답을 받지 못했어요.");
   const payload = await response.json();
-  return Array.isArray(payload.results) ? payload.results : [];
+  if (!response.ok) {
+    throw new Error(payload.message || payload.error || "상품 조회 서버에서 응답을 받지 못했어요.");
+  }
+  return {
+    results: Array.isArray(payload.results) ? payload.results : [],
+    debug: payload.debug || null,
+  };
 }
 
 function applyLookupCandidate(candidateId, resultIndex) {

@@ -398,6 +398,36 @@ textarea:focus {
   font-size: 12px;
 }
 
+.lookup-debug {
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12px;
+}
+
+.lookup-debug summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.lookup-debug strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--ink);
+}
+
+.lookup-debug ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.lookup-debug li {
+  margin: 4px 0;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 .wardrobe {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }

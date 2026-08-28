@@ -24,8 +24,8 @@ createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
     if (url.pathname === "/api/product-lookup") {
-      const results = await productLookup(url.searchParams);
-      sendJson(res, 200, { results });
+      const payload = await productLookup(url.searchParams);
+      sendJson(res, 200, Array.isArray(payload) ? { results: payload } : payload);
       return;
     }
 
@@ -68,7 +68,17 @@ async function productLookup(params) {
 }
 
 async function lookupMusinsa(input) {
-  const urls = await findMusinsaProductUrls(input.query);
+  const debug = { queries: [], errors: [] };
+  const apiCandidates = await searchMusinsaApi(input, debug);
+
+  if (apiCandidates.length) {
+    return {
+      results: rankCandidates(input, apiCandidates).slice(0, 5),
+      debug,
+    };
+  }
+
+  const urls = await findMusinsaProductUrls(input.query, debug);
   const candidates = [];
 
   for (const url of urls.slice(0, 5)) {
@@ -89,20 +99,113 @@ async function lookupMusinsa(input) {
     }
   }
 
-  return candidates
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
-    .map(({ score, ...candidate }) => candidate);
+  return {
+    results: rankCandidates(input, candidates).slice(0, 5),
+    debug,
+  };
 }
 
-async function findMusinsaProductUrls(query) {
+async function searchMusinsaApi(input, debug) {
+  const candidates = [];
+  const seen = new Set();
+  const queries = buildSearchQueries(input);
+
+  for (const query of queries) {
+    const url = `https://api.musinsa.com/api2/dp/v1/plp/goods?gf=A&sortCode=POPULAR&caller=SEARCH&keyword=${encodeURIComponent(query)}&page=1&size=20`;
+    debug.queries.push({ type: "musinsa-api", query });
+
+    try {
+      const payload = await fetchJson(url);
+      const goods = extractGoodsFromPayload(payload);
+      goods.forEach((item) => {
+        const normalized = normalizeMusinsaApiItem(item);
+        if (!normalized.url || seen.has(normalized.url)) return;
+        seen.add(normalized.url);
+        candidates.push(normalized);
+      });
+    } catch (error) {
+      debug.errors.push(`musinsa-api "${query}": ${error.message}`);
+    }
+  }
+
+  return candidates;
+}
+
+function buildSearchQueries(input) {
+  const baseName = stripSearchNoise(input.name);
+  const withoutColor = stripColorWords(baseName);
+  const code = extractProductCode(`${input.name} ${input.option}`);
+  const terms = [
+    [input.brand, baseName, code].filter(Boolean).join(" "),
+    [input.brand, baseName].filter(Boolean).join(" "),
+    baseName,
+    [input.brand, withoutColor].filter(Boolean).join(" "),
+    withoutColor,
+    code ? [input.brand, code].filter(Boolean).join(" ") : "",
+    code,
+  ]
+    .map((value) => clean(value))
+    .filter((value) => value.length >= 2);
+
+  return [...new Set(terms)].slice(0, 7);
+}
+
+function stripSearchNoise(value) {
+  return clean(value)
+    .replace(/구매\s*확정|배송\s*조회|재구매|스냅\s*보기|후기\s*작성.*$/g, " ")
+    .replace(/(?:\d{1,3},)*\d{3}\s*원/g, " ")
+    .replace(/\s*\/\s*\d+\s*개/g, " ")
+    .replace(/\b(XS|S|M|L|XL|XXL|\d{2,3})\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripColorWords(value) {
+  return clean(value)
+    .replace(/\[?(블랙|검정|화이트|아이보리|그레이|차콜|네이비|베이지|브라운|카키|올리브|핑크|그린|레드|black|white|ivory|gray|grey|navy|beige|brown|khaki|olive|pink|green|red)\]?/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractGoodsFromPayload(payload) {
+  const found = [];
+  const visit = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (value.goodsNo || value.goodsNumber || value.goodsId) found.push(value);
+    Object.values(value).forEach(visit);
+  };
+  visit(payload?.data || payload);
+  return found;
+}
+
+function normalizeMusinsaApiItem(item) {
+  const goodsNo = item.goodsNo || item.goodsNumber || item.goodsId;
+  const price = item.finalPrice || item.price || item.normalPrice || item.salePrice || "";
+  return {
+    store: "musinsa",
+    brand: item.brandName || item.brand || item.brandNameKor || "",
+    name: item.goodsName || item.productName || item.name || "",
+    price: price ? `${numberWithCommas(price)}원` : "",
+    image: absolutize(item.imageUrl || item.thumbnail || item.goodsImageUrl || item.image || "", "https://www.musinsa.com"),
+    url: goodsNo ? `https://www.musinsa.com/products/${goodsNo}` : item.linkUrl || item.url || "",
+  };
+}
+
+async function findMusinsaProductUrls(query, debug = { queries: [], errors: [] }) {
   const searchQuery = `${query} site:musinsa.com/products`;
   const ddgUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
   let html = "";
+  debug.queries.push({ type: "duckduckgo", query: searchQuery });
   try {
     html = await fetchText(ddgUrl);
   } catch (error) {
-    throw new Error(`외부 검색 요청이 실패했습니다: ${error.message}`);
+    debug.errors.push(`duckduckgo: ${error.message}`);
+    return [];
   }
   const urls = new Set();
 
@@ -115,6 +218,11 @@ async function findMusinsaProductUrls(query) {
   }
 
   return [...urls];
+}
+
+async function fetchJson(url) {
+  const text = await fetchText(url, "application/json,text/plain,*/*");
+  return JSON.parse(text);
 }
 
 async function readProductPage(url) {
@@ -133,10 +241,10 @@ async function readProductPage(url) {
   return meta;
 }
 
-async function fetchText(url) {
+async function fetchText(url, accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8") {
   const response = await fetch(url, {
     headers: {
-      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept": accept,
       "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
       "user-agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -218,6 +326,13 @@ function scoreCandidate(input, item) {
   if (input.brand && item.brand && normalizeText(input.brand) === normalizeText(item.brand)) score += 10;
   if (extractProductCode(input.query) && item.name?.includes(extractProductCode(input.query))) score += 12;
   return score;
+}
+
+function rankCandidates(input, candidates) {
+  return candidates
+    .map((candidate) => ({ ...candidate, score: scoreCandidate(input, candidate) }))
+    .sort((a, b) => b.score - a.score)
+    .map(({ score, ...candidate }) => candidate);
 }
 
 function tokenize(value) {

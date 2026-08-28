@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Closet Intake Lab</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script defer src="./app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Closet Intake Lab</p>
+          <h1>옷장 등록 실험실</h1>
+        </div>
+        <div class="topbar-actions">
+          <button id="exportBtn" class="secondary" type="button">JSON 내보내기</button>
+          <label class="secondary import-label">
+            JSON 가져오기
+            <input id="importInput" type="file" accept="application/json" hidden />
+          </label>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="panel intake-panel">
+          <div class="tabs" role="tablist" aria-label="등록 방식">
+            <button class="tab active" data-tab="order" type="button">주문내역</button>
+            <button class="tab" data-tab="photo" type="button">직접 사진</button>
+          </div>
+
+          <section id="orderTab" class="tab-panel active">
+            <div class="field">
+              <label for="orderImage">주문내역 스크린샷</label>
+              <input id="orderImage" type="file" accept="image/*" />
+            </div>
+
+            <div class="field">
+              <label for="storeSelect">쇼핑몰</label>
+              <select id="storeSelect">
+                <option value="musinsa">무신사 주문내역</option>
+                <option value="generic">일반 주문내역</option>
+              </select>
+            </div>
+
+            <div class="toolbar">
+              <button id="ocrBtn" type="button" disabled>OCR 실행 후 상품 정리</button>
+              <button id="detectBtn" class="secondary" type="button" disabled>화면 이미지 보조 추출</button>
+            </div>
+
+            <div class="ocr-options">
+              <label for="ocrLang">OCR 언어</label>
+              <select id="ocrLang">
+                <option value="kor+eng">한국어 + 영어</option>
+                <option value="eng">영어</option>
+              </select>
+            </div>
+
+            <div id="canvasWrap" class="canvas-wrap empty">
+              <canvas id="orderCanvas"></canvas>
+              <p>스크린샷을 올리면 OCR로 상품명을 정리합니다. 이미지는 원본 상품 조회가 실패했을 때만 보조로 씁니다.</p>
+            </div>
+
+            <div class="toolbar">
+              <button id="manualCropBtn" class="secondary" type="button" disabled>선택 영역 추가</button>
+              <button id="clearSelectionBtn" class="ghost" type="button" disabled>선택 해제</button>
+            </div>
+
+            <div class="field">
+              <label for="ocrText">OCR 원문</label>
+              <textarea id="ocrText" rows="8" placeholder="OCR 결과가 여기에 들어옵니다. 주문내역 텍스트를 직접 붙여넣어도 됩니다."></textarea>
+            </div>
+
+            <button id="makeTextCandidatesBtn" class="secondary full" type="button">
+              OCR 원문에서 상품 후보 다시 정리
+            </button>
+          </section>
+
+          <section id="photoTab" class="tab-panel">
+            <div class="field">
+              <label for="directPhoto">옷 사진</label>
+              <input id="directPhoto" type="file" accept="image/*" />
+            </div>
+
+            <form id="directForm" class="stack">
+              <div id="directPreview" class="photo-preview empty">사진을 올리면 미리보기가 보여요.</div>
+              <div class="field">
+                <label for="directName">제품명/별명</label>
+                <input id="directName" type="text" placeholder="예: 검은색 반팔, 회색 후드집업" />
+              </div>
+              <div class="grid-2">
+                <div class="field">
+                  <label for="directCategory">분류</label>
+                  <select id="directCategory"></select>
+                </div>
+                <div class="field">
+                  <label for="directColor">색상</label>
+                  <input id="directColor" type="text" placeholder="예: 블랙" />
+                </div>
+              </div>
+              <div class="grid-2">
+                <div class="field">
+                  <label for="directStyle">무드</label>
+                  <input id="directStyle" type="text" placeholder="예: 미니멀, 캐주얼" />
+                </div>
+                <div class="field">
+                  <label for="directSeason">계절감</label>
+                  <select id="directSeason">
+                    <option value="사계절">사계절</option>
+                    <option value="봄/가을">봄/가을</option>
+                    <option value="여름">여름</option>
+                    <option value="겨울">겨울</option>
+                  </select>
+                </div>
+              </div>
+              <button type="submit" class="full">직접 등록</button>
+            </form>
+          </section>
+        </aside>
+
+        <section class="panel queue-panel">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Review Queue</p>
+              <h2>확인 대기 후보</h2>
+            </div>
+            <button id="clearQueueBtn" class="ghost" type="button">비우기</button>
+          </div>
+          <div id="queue" class="queue"></div>
+        </section>
+      </section>
+
+      <section class="panel wardrobe-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Wardrobe</p>
+            <h2>등록된 옷장 <span id="wardrobeCount">0</span></h2>
+          </div>
+          <div class="filters">
+            <select id="categoryFilter" aria-label="분류 필터">
+              <option value="all">전체 분류</option>
+            </select>
+            <input id="searchFilter" type="search" placeholder="제품명, 색상, 무드 검색" />
+          </div>
+        </div>
+        <div id="wardrobe" class="wardrobe"></div>
+      </section>
+    </main>
+  </body>
+</html>

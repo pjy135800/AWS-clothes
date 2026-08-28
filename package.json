@@ -1,0 +1,13 @@
+{
+  "name": "wardrobe-registration-prototype",
+  "version": "0.2.0",
+  "private": true,
+  "description": "OCR-based wardrobe intake prototype with a server-side product lookup adapter.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

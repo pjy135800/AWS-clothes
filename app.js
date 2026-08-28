@@ -92,7 +92,7 @@ function bindManualSearchFlow() {
     const candidate = addCandidate({
       brand,
       name,
-      store: "musinsa",
+      store: $("#manualStore").value,
       source: "직접 검색",
     });
     renderQueue();

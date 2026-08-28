@@ -66,7 +66,7 @@ async function productLookup(params) {
     return lookupMusinsa({ brand, name, option, query });
   }
 
-  return lookupMusinsa({ brand, name, option, query });
+  return lookupGenericStore({ store, brand, name, option, query });
 }
 
 async function lookupProductUrl(productUrl) {
@@ -152,19 +152,96 @@ function buildSearchQueries(input) {
   const baseName = stripSearchNoise(input.name);
   const withoutColor = stripColorWords(baseName);
   const code = extractProductCode(`${input.name} ${input.option}`);
+  const compactName = compactProductName(withoutColor || baseName);
+  const tokenVariants = buildTokenVariants(withoutColor || baseName);
   const terms = [
     [input.brand, baseName, code].filter(Boolean).join(" "),
     [input.brand, baseName].filter(Boolean).join(" "),
     baseName,
     [input.brand, withoutColor].filter(Boolean).join(" "),
     withoutColor,
+    [input.brand, compactName].filter(Boolean).join(" "),
+    compactName,
+    ...tokenVariants.map((variant) => [input.brand, variant].filter(Boolean).join(" ")),
+    ...tokenVariants,
     code ? [input.brand, code].filter(Boolean).join(" ") : "",
     code,
   ]
     .map((value) => clean(value))
     .filter((value) => value.length >= 2);
 
-  return [...new Set(terms)].slice(0, 7);
+  return [...new Set(terms)].slice(0, 10);
+}
+
+async function lookupGenericStore(input) {
+  const debug = { queries: [], errors: [] };
+  const urls = await findGenericProductUrls(input, debug);
+  const candidates = [];
+
+  for (const url of urls.slice(0, 5)) {
+    try {
+      const item = await readProductPage(url);
+      if (!item.name && !item.image) continue;
+      candidates.push({
+        store: input.store || "other",
+        brand: item.brand || input.brand,
+        name: item.name || input.name,
+        price: item.price || "",
+        image: item.image || "",
+        url: item.url || url,
+      });
+    } catch (error) {
+      debug.errors.push(`product-page: ${error.message}`);
+    }
+  }
+
+  return {
+    results: rankCandidates(input, candidates).slice(0, 5),
+    debug,
+  };
+}
+
+async function findGenericProductUrls(input, debug) {
+  const domain = storeDomainHint(input.store);
+  const urls = new Set();
+  const queries = buildSearchQueries(input);
+
+  for (const query of queries.slice(0, 5)) {
+    const searchQuery = domain ? `${query} site:${domain}` : query;
+    const ddgUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(searchQuery)}`;
+    debug.queries.push({ type: "web-search", query: searchQuery });
+    try {
+      const html = await fetchText(ddgUrl);
+      for (const match of html.matchAll(/href="([^"]+)"/g)) {
+        const normalized = unwrapDuckDuckGoUrl(decodeHtml(match[1]));
+        if (!isUsableProductUrl(normalized, input.store)) continue;
+        urls.add(normalized);
+        if (urls.size >= 8) break;
+      }
+    } catch (error) {
+      debug.errors.push(`web-search "${searchQuery}": ${error.message}`);
+    }
+    if (urls.size >= 5) break;
+  }
+
+  return [...urls];
+}
+
+function storeDomainHint(store) {
+  if (store === "zara") return "zara.com";
+  return "";
+}
+
+function isUsableProductUrl(url, store) {
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol)) return false;
+    if (/duckduckgo|google|naver|facebook|instagram|youtube|pinterest/i.test(parsed.hostname)) return false;
+    if (store === "zara") return /zara\.com$/i.test(parsed.hostname) || /\.zara\.com$/i.test(parsed.hostname);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function stripSearchNoise(value) {
@@ -175,6 +252,24 @@ function stripSearchNoise(value) {
     .replace(/\b(XS|S|M|L|XL|XXL|\d{2,3})\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function compactProductName(value) {
+  return clean(value)
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[_/().-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildTokenVariants(value) {
+  const tokens = tokenize(value).filter((token) => token.length >= 2);
+  const variants = [];
+  if (tokens.length >= 4) variants.push(tokens.slice(0, 4).join(" "));
+  if (tokens.length >= 3) variants.push(tokens.slice(0, 3).join(" "));
+  if (tokens.length >= 4) variants.push(tokens.slice(1, 5).join(" "));
+  return variants;
 }
 
 function stripColorWords(value) {
@@ -343,11 +438,34 @@ function scoreCandidate(input, item) {
 
   targetTokens.forEach((token) => {
     if (itemTokens.includes(token)) score += token.length > 3 ? 3 : 1;
+    else if (itemTokens.some((itemToken) => isNearToken(token, itemToken))) score += 1;
   });
 
   if (input.brand && item.brand && normalizeText(input.brand) === normalizeText(item.brand)) score += 10;
   if (extractProductCode(input.query) && item.name?.includes(extractProductCode(input.query))) score += 12;
   return score;
+}
+
+function isNearToken(a, b) {
+  if (a.length < 3 || b.length < 3) return false;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  return levenshtein(a, b) <= 1;
+}
+
+function levenshtein(a, b) {
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i += 1) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+      );
+    }
+  }
+  return dp[a.length][b.length];
 }
 
 function rankCandidates(input, candidates) {

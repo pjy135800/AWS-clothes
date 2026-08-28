@@ -56,8 +56,10 @@ async function productLookup(params) {
   const brand = clean(params.get("brand"));
   const name = clean(params.get("name"));
   const option = clean(params.get("option"));
+  const productUrl = clean(params.get("url"));
   const query = [brand, name, option].filter(Boolean).join(" ");
 
+  if (productUrl) return lookupProductUrl(productUrl);
   if (!query) return [];
 
   if (store === "musinsa") {
@@ -65,6 +67,21 @@ async function productLookup(params) {
   }
 
   return lookupMusinsa({ brand, name, option, query });
+}
+
+async function lookupProductUrl(productUrl) {
+  const debug = { queries: [{ type: "product-url", query: productUrl }], errors: [] };
+  try {
+    const item = await readProductPage(normalizeProductUrl(productUrl));
+    return {
+      source: "url",
+      results: item.name || item.image ? [item] : [],
+      debug,
+    };
+  } catch (error) {
+    debug.errors.push(`product-url: ${error.message}`);
+    return { source: "url", results: [], debug };
+  }
 }
 
 async function lookupMusinsa(input) {
@@ -312,6 +329,11 @@ function normalizeMusinsaProductUrl(url) {
   const parsed = new URL(url);
   const match = parsed.pathname.match(/\/(?:app\/goods|products)\/(\d+)/i);
   return match ? `https://www.musinsa.com/products/${match[1]}` : parsed.href;
+}
+
+function normalizeProductUrl(url) {
+  if (/musinsa\.com/i.test(url)) return normalizeMusinsaProductUrl(url);
+  return new URL(url).href;
 }
 
 function scoreCandidate(input, item) {

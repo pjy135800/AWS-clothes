@@ -27,7 +27,9 @@
       <section class="workspace">
         <aside class="panel intake-panel">
           <div class="tabs" role="tablist" aria-label="등록 방식">
-            <button class="tab active" data-tab="order" type="button">주문내역</button>
+            <button class="tab active" data-tab="order" type="button">OCR</button>
+            <button class="tab" data-tab="search" type="button">직접 검색</button>
+            <button class="tab" data-tab="url" type="button">URL</button>
             <button class="tab" data-tab="photo" type="button">직접 사진</button>
           </div>
 
@@ -47,7 +49,6 @@
 
             <div class="toolbar">
               <button id="ocrBtn" type="button" disabled>OCR 실행 후 상품 정리</button>
-              <button id="detectBtn" class="secondary" type="button" disabled>화면 이미지 보조 추출</button>
             </div>
 
             <div class="ocr-options">
@@ -60,12 +61,7 @@
 
             <div id="canvasWrap" class="canvas-wrap empty">
               <canvas id="orderCanvas"></canvas>
-              <p>스크린샷을 올리면 OCR로 상품명을 정리합니다. 이미지는 원본 상품 조회가 실패했을 때만 보조로 씁니다.</p>
-            </div>
-
-            <div class="toolbar">
-              <button id="manualCropBtn" class="secondary" type="button" disabled>선택 영역 추가</button>
-              <button id="clearSelectionBtn" class="ghost" type="button" disabled>선택 해제</button>
+              <p>스크린샷을 올리면 OCR로 상품명을 정리합니다.</p>
             </div>
 
             <div class="field">
@@ -76,6 +72,30 @@
             <button id="makeTextCandidatesBtn" class="secondary full" type="button">
               OCR 원문에서 상품 후보 다시 정리
             </button>
+          </section>
+
+          <section id="searchTab" class="tab-panel">
+            <form id="manualSearchForm" class="stack">
+              <div class="field">
+                <label for="manualBrand">브랜드</label>
+                <input id="manualBrand" type="text" placeholder="예: 데꼬로소" />
+              </div>
+              <div class="field">
+                <label for="manualName">제품명</label>
+                <input id="manualName" type="text" placeholder="예: 웨스턴 투 포켓 셔츠 [블랙]" />
+              </div>
+              <button type="submit" class="full">상품 검색 후보 만들기</button>
+            </form>
+          </section>
+
+          <section id="urlTab" class="tab-panel">
+            <form id="urlForm" class="stack">
+              <div class="field">
+                <label for="productUrl">상품 URL</label>
+                <input id="productUrl" type="url" placeholder="https://www.musinsa.com/products/..." />
+              </div>
+              <button type="submit" class="full">URL로 상품 가져오기</button>
+            </form>
           </section>
 
           <section id="photoTab" class="tab-panel">

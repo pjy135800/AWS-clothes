@@ -30,6 +30,8 @@ function init() {
   fillCategorySelects();
   bindTabs();
   bindOrderFlow();
+  bindManualSearchFlow();
+  bindUrlFlow();
   bindDirectFlow();
   bindWardrobeTools();
   renderQueue();
@@ -69,32 +71,55 @@ function bindOrderFlow() {
     state.orderImage = await readImage(file);
     state.selection = null;
     $("#canvasWrap").classList.remove("empty");
-    $("#detectBtn").disabled = false;
     $("#ocrBtn").disabled = false;
-    $("#manualCropBtn").disabled = false;
-    $("#clearSelectionBtn").disabled = false;
     drawOrderImage();
-  });
-
-  $("#detectBtn").addEventListener("click", () => {
-    if (!state.orderImage) return;
-    const crops = detectImageLikeRegions(state.orderImage);
-    crops.forEach((crop) => addCandidate({ image: crop.image, source: "자동 썸네일" }));
-    renderQueue();
-    toast(crops.length ? `${crops.length}개의 썸네일 후보를 만들었어요.` : "자동 후보를 찾지 못했어요. 직접 드래그해서 추가해보세요.");
   });
 
   $("#ocrBtn").addEventListener("click", runOcr);
   $("#makeTextCandidatesBtn").addEventListener("click", makeTextCandidates);
-  $("#manualCropBtn").addEventListener("click", addManualCrop);
-  $("#clearSelectionBtn").addEventListener("click", () => {
-    state.selection = null;
-    drawOrderImage();
-  });
+}
 
-  orderCanvas.addEventListener("pointerdown", startSelection);
-  orderCanvas.addEventListener("pointermove", moveSelection);
-  window.addEventListener("pointerup", endSelection);
+function bindManualSearchFlow() {
+  $("#manualSearchForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const brand = cleanName($("#manualBrand").value);
+    const name = cleanName($("#manualName").value);
+    if (!brand && !name) {
+      toast("브랜드나 제품명을 하나 이상 입력해 주세요.");
+      return;
+    }
+
+    const candidate = addCandidate({
+      brand,
+      name,
+      store: "musinsa",
+      source: "직접 검색",
+    });
+    renderQueue();
+    await lookupProductInfo(candidate.id);
+  });
+}
+
+function bindUrlFlow() {
+  $("#urlForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const productUrl = cleanName($("#productUrl").value);
+    if (!productUrl) {
+      toast("상품 URL을 입력해 주세요.");
+      return;
+    }
+
+    const candidate = addCandidate({
+      name: "URL에서 가져오는 중",
+      productUrl,
+      store: inferStoreFromUrl(productUrl),
+      source: "상품 URL",
+      lookupStatus: "URL에서 상품 정보를 가져오는 중...",
+    });
+    renderQueue();
+    await lookupProductInfo(candidate.id);
+    $("#productUrl").value = "";
+  });
 }
 
 function bindDirectFlow() {
@@ -250,7 +275,7 @@ async function runOcr() {
     toast("OCR에 실패했어요. 캡처가 흐리면 텍스트를 직접 붙여넣는 방식으로 테스트해 주세요.");
   } finally {
     button.disabled = false;
-    button.textContent = "OCR 실행";
+    button.textContent = "OCR 실행 후 상품 정리";
   }
 }
 
@@ -279,7 +304,7 @@ function makeTextCandidates() {
 
 function addCandidate(data) {
   const inferred = inferFromText(`${data.brand || ""} ${data.name || ""} ${data.option || ""}`);
-  state.queue.unshift({
+  const candidate = {
     id: crypto.randomUUID(),
     image: data.image || "",
     name: data.name || "",
@@ -293,10 +318,12 @@ function addCandidate(data) {
     style: data.style || inferred.style,
     season: data.season || inferred.season,
     source: data.source || "후보",
-    lookupStatus: "",
+    lookupStatus: data.lookupStatus || "",
     lookupCandidates: [],
     lookupDebug: null,
-  });
+  };
+  state.queue.unshift(candidate);
+  return candidate;
 }
 
 function renderQueue() {
@@ -422,6 +449,14 @@ async function lookupProductInfo(id) {
 
   try {
     const payload = await fetchProductLookup(candidate);
+    if (payload.source === "url" && payload.results.length === 1) {
+      applyLookupData(candidate, payload.results[0]);
+      candidate.lookupStatus = "URL에서 상품 정보를 가져왔어요. 맞으면 등록하면 됩니다.";
+      candidate.lookupCandidates = [];
+      candidate.lookupDebug = payload.debug;
+      renderQueue();
+      return;
+    }
     candidate.lookupCandidates = payload.results;
     candidate.lookupDebug = payload.debug;
     candidate.lookupStatus = payload.results.length
@@ -445,6 +480,7 @@ async function fetchProductLookup(candidate) {
     brand: candidate.brand || "",
     name: candidate.name || "",
     option: candidate.option || "",
+    url: candidate.productUrl || "",
   });
   const response = await fetch(`/api/product-lookup?${params.toString()}`);
   const payload = await response.json();
@@ -462,6 +498,13 @@ function applyLookupCandidate(candidateId, resultIndex) {
   const result = candidate?.lookupCandidates?.[resultIndex];
   if (!candidate || !result) return;
 
+  applyLookupData(candidate, result);
+  candidate.lookupStatus = "원본 상품 정보를 적용했어요.";
+  candidate.lookupCandidates = [];
+  renderQueue();
+}
+
+function applyLookupData(candidate, result) {
   candidate.image = result.image || candidate.image;
   candidate.name = result.name || candidate.name;
   candidate.brand = result.brand || candidate.brand;
@@ -469,13 +512,16 @@ function applyLookupCandidate(candidateId, resultIndex) {
   candidate.productUrl = result.url || candidate.productUrl;
 
   const inferred = inferFromText(`${candidate.brand} ${candidate.name} ${candidate.option}`);
-  candidate.category ||= inferred.category;
-  candidate.color ||= inferred.color;
-  candidate.style ||= inferred.style;
-  candidate.season ||= inferred.season;
-  candidate.lookupStatus = "원본 상품 정보를 적용했어요.";
-  candidate.lookupCandidates = [];
-  renderQueue();
+  candidate.category = inferred.category || candidate.category;
+  candidate.color = inferred.color || candidate.color;
+  candidate.style = inferred.style || candidate.style;
+  candidate.season = inferred.season || candidate.season;
+}
+
+function inferStoreFromUrl(url) {
+  if (/musinsa\.com/i.test(url)) return "musinsa";
+  if (/zara\.com/i.test(url)) return "zara";
+  return "generic";
 }
 
 function registerCandidate(id) {
@@ -553,6 +599,7 @@ function normalizeItem(data) {
 function parseOrderItems(text, store) {
   const lines = cleanupOcrText(text)
     .split("\n")
+    .flatMap(splitPackedOrderLine)
     .map(normalizeOcrLine)
     .filter(Boolean)
     .filter((line) => !isOrderNoise(line));
@@ -563,63 +610,30 @@ function parseOrderItems(text, store) {
 
 function parseMusinsaOrderLines(lines) {
   const items = [];
-  let current = null;
-  let expectingBrand = false;
+  let block = [];
 
   lines.forEach((line) => {
-    if (isPurchaseStatus(line)) {
-      pushCurrentItem(items, current);
-      current = null;
-      expectingBrand = true;
+    if (isDateLine(line)) {
+      pushBlockAsItem(items, block);
+      block = [];
       return;
     }
 
-    if (isDateLine(line)) {
-      pushCurrentItem(items, current);
-      current = null;
-      expectingBrand = false;
+    if (isPurchaseStatus(line)) {
+      pushBlockAsItem(items, block);
+      block = [];
       return;
     }
+
+    block.push(line);
 
     if (isPriceLine(line)) {
-      if (current) {
-        current.price = extractPrice(line);
-        pushCurrentItem(items, current);
-        current = null;
-      }
-      expectingBrand = false;
-      return;
-    }
-
-    if (expectingBrand && isLikelyBrandLine(line)) {
-      current = { brand: line, nameParts: [], optionParts: [], price: "" };
-      expectingBrand = false;
-      return;
-    }
-
-    if (!current && isLikelyBrandLine(line)) {
-      current = { brand: line, nameParts: [], optionParts: [], price: "" };
-      return;
-    }
-
-    if (!current) return;
-
-    if (isOptionLine(line)) {
-      current.optionParts.push(line);
-      return;
-    }
-
-    if (isProductCodeLine(line) && current.nameParts.length) {
-      current.nameParts.push(line);
-      return;
-    }
-
-    if (isLikelyProductName(line)) {
-      current.nameParts.push(line);
+      pushBlockAsItem(items, block);
+      block = [];
     }
   });
 
-  pushCurrentItem(items, current);
+  pushBlockAsItem(items, block);
   return dedupeItems(items);
 }
 
@@ -658,8 +672,36 @@ function pushCurrentItem(items, current) {
   if (item.name) items.push(item);
 }
 
+function pushBlockAsItem(items, block) {
+  const useful = block
+    .map(splitLineFields)
+    .flat()
+    .map(normalizeOcrLine)
+    .filter(Boolean)
+    .filter((line) => !isOrderNoise(line));
+
+  if (!useful.length) return;
+
+  const priceLine = useful.find(isPriceLine) || "";
+  const price = extractPrice(priceLine);
+  const optionLines = useful.filter(isOptionLine);
+  const brandIndex = useful.findIndex((line) => isLikelyBrandLine(line) && !isOptionLine(line));
+  const brand = brandIndex >= 0 ? useful[brandIndex] : "";
+  const nameParts = useful
+    .filter((line, index) => index !== brandIndex)
+    .filter((line) => !isPriceLine(line))
+    .filter((line) => !isOptionLine(line))
+    .filter((line) => !isProductCodeLine(line))
+    .map(cleanProductNamePart)
+    .filter(isLikelyProductName);
+
+  const name = chooseProductName(nameParts);
+  if (!name) return;
+  items.push({ brand, name, option: cleanName(optionLines.join(" ")), price });
+}
+
 function buildOrderItem(current) {
-  const name = cleanName((current.nameParts || []).join(" "));
+  const name = chooseProductName((current.nameParts || []).map(cleanProductNamePart));
   const option = cleanName((current.optionParts || []).join(" "));
   return {
     brand: cleanName(current.brand || ""),
@@ -684,7 +726,40 @@ function normalizeOcrLine(line) {
     line
       .replace(/[|{}[\]<>]/g, " ")
       .replace(/[•·]\s*1개/g, " / 1개")
+      .replace(/[ᆞㆍ]/g, " / ")
       .replace(/\s*\/\s*/g, " / ")
+  );
+}
+
+function splitPackedOrderLine(line) {
+  return String(line || "")
+    .replace(/(구매\s*확정|배송\s*완료|결제\s*완료|주문\s*완료)/g, "\n$1\n")
+    .replace(/(스냅\s*보기|후기\s*작성(?:[^0-9\n]*)?|배송\s*조회|재구매)/g, "\n$1\n")
+    .replace(/((?:\d{1,3},)*\d{3}\s*원|\d+\s*원)/g, "\n$1\n")
+    .replace(/((?:Size[-\s]?\d+|[A-Z0-9_-]+(?:[._-][A-Z0-9_-]+)+|(?:블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED|BLACK|BLUE)[^/\n]{0,20})\s*\/\s*\d+\s*개)/gi, "\n$1\n")
+    .split(/\n+/);
+}
+
+function splitLineFields(line) {
+  const parts = splitPackedOrderLine(line).map(normalizeOcrLine).filter(Boolean);
+  return parts.length ? parts : [line];
+}
+
+function cleanProductNamePart(value) {
+  return cleanName(value)
+    .replace(/구매\s*확정|배송\s*조회|재구매|스냅\s*보기|후기\s*작성.*$/g, " ")
+    .replace(/(?:\d{1,3},)*\d{3}\s*원|\d+\s*원/g, " ")
+    .replace(/(?:Size[-\s]?\d+|[A-Z0-9_-]+(?:[._-][A-Z0-9_-]+)+|(?:블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED)[^/]{0,20})\s*\/\s*\d+\s*개/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function chooseProductName(parts) {
+  return cleanName(
+    parts
+      .map(cleanProductNamePart)
+      .filter((part) => part.length >= 4)
+      .sort((a, b) => b.length - a.length)[0] || ""
   );
 }
 
@@ -705,8 +780,8 @@ function isOrderNoise(line) {
     /^안 입는 옷/,
     /^스냅\s*보기$/,
     /^후기\s*작성/,
-    /^배송\s*조회$/,
-    /^재구매$/,
+    /배송\s*조회/,
+    /재구매/,
     /^홈$/,
   ].some((regex) => regex.test(line));
 }
@@ -742,6 +817,8 @@ function isProductCodeLine(line) {
 function isOptionLine(line) {
   return (
     /\/\s*\d+\s*개/.test(line) ||
+    /Size[-\s]?\d+/i.test(line) ||
+    /^\d{3}\s*mm/i.test(line) ||
     /(블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED).*(XS|S|M|L|XL|XXL|\d{2,3})/i.test(line) ||
     /^[A-Z0-9_-]+[._-](BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|DARK|LIGHT)/i.test(line)
   );

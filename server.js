@@ -29,6 +29,12 @@ createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/weather") {
+      const payload = await weatherLookup(url.searchParams);
+      sendJson(res, 200, payload);
+      return;
+    }
+
     const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
     const target = normalize(join(root, pathname));
     if (!target.startsWith(root)) {
@@ -72,15 +78,59 @@ async function productLookup(params) {
 async function lookupProductUrl(productUrl) {
   const debug = { queries: [{ type: "product-url", query: productUrl }], errors: [] };
   try {
-    const item = await readProductPage(normalizeProductUrl(productUrl));
+    const normalizedUrl = normalizeProductUrl(productUrl);
+    const item = await readProductPage(normalizedUrl);
     return {
       source: "url",
-      results: item.name || item.image ? [item] : [],
+      results: [item],
       debug,
     };
   } catch (error) {
     debug.errors.push(`product-url: ${error.message}`);
-    return { source: "url", results: [], debug };
+    return { source: "url", results: [fallbackUrlItem(productUrl)], debug };
+  }
+}
+
+async function weatherLookup(params) {
+  const location = clean(params.get("location")) || "Seoul";
+  try {
+    const placeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=ko&format=json`;
+    const placePayload = await fetchJson(placeUrl);
+    const place = placePayload?.results?.[0];
+    if (!place) throw new Error("Location not found");
+
+    const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto`;
+    const forecast = await fetchJson(forecastUrl);
+    const current = forecast.current || {};
+    const daily = forecast.daily || {};
+    const code = current.weather_code;
+    const condition = weatherCodeLabel(code);
+    return {
+      location: [place.name, place.admin1, place.country].filter(Boolean).join(", "),
+      temperature: Number(current.temperature_2m ?? daily.temperature_2m_max?.[0] ?? 24),
+      feelsLike: Number(current.apparent_temperature ?? current.temperature_2m ?? 24),
+      min: Number(daily.temperature_2m_min?.[0] ?? current.temperature_2m ?? 19),
+      max: Number(daily.temperature_2m_max?.[0] ?? current.temperature_2m ?? 27),
+      precipitation: Number(daily.precipitation_probability_max?.[0] ?? 0),
+      wind: Number(current.wind_speed_10m ?? 0),
+      icon: condition.icon,
+      summary: condition.label,
+      detail: `최고 ${Math.round(Number(daily.temperature_2m_max?.[0] ?? current.temperature_2m ?? 0))}°C · 최저 ${Math.round(Number(daily.temperature_2m_min?.[0] ?? current.temperature_2m ?? 0))}°C · 강수확률 ${Number(daily.precipitation_probability_max?.[0] ?? 0)}%`,
+      source: "open-meteo",
+    };
+  } catch (error) {
+    return {
+      location,
+      temperature: 24,
+      min: 19,
+      max: 27,
+      precipitation: 0,
+      wind: 0,
+      icon: "--",
+      summary: "실시간 날씨 연결 실패",
+      detail: `기본 날씨값으로 추천합니다. ${error.message}`,
+      source: "fallback",
+    };
   }
 }
 
@@ -340,31 +390,56 @@ async function fetchJson(url) {
 async function readProductPage(url) {
   const html = await fetchText(url);
   const jsonLd = parseJsonLdProduct(html);
+  const nextData = parseNextData(html);
+  const deepProduct = findProductLikeObject(nextData);
+  const title = getMeta(html, "og:title") || getMeta(html, "twitter:title") || readHtmlTitle(html);
+  const image =
+    getMeta(html, "og:image") ||
+    getMeta(html, "twitter:image") ||
+    firstImage(jsonLd.image) ||
+    firstImage(deepProduct?.image) ||
+    firstImage(deepProduct?.images) ||
+    deepProduct?.imageUrl ||
+    deepProduct?.thumbnail ||
+    deepProduct?.goodsImageUrl ||
+    "";
   const meta = {
-    name: getMeta(html, "og:title") || jsonLd.name || "",
-    image: absolutize(getMeta(html, "og:image") || firstImage(jsonLd.image), url),
-    url: getMeta(html, "og:url") || url,
-    brand: readJsonLdBrand(jsonLd),
-    price: readJsonLdPrice(jsonLd) || getMeta(html, "product:price:amount") || "",
+    name: title || jsonLd.name || deepProduct?.name || deepProduct?.productName || deepProduct?.goodsName || "",
+    image: absolutize(cleanImageUrl(image), url),
+    url: getMeta(html, "og:url") || deepProduct?.url || url,
+    brand: readJsonLdBrand(jsonLd) || readDeepBrand(deepProduct),
+    price: readJsonLdPrice(jsonLd) || getMeta(html, "product:price:amount") || deepProduct?.price || deepProduct?.finalPrice || deepProduct?.salePrice || "",
   };
 
   meta.name = cleanProductTitle(meta.name);
+  if (isBlankMetaValue(meta.name)) meta.name = "";
   if (meta.price && !/원$/.test(meta.price)) meta.price = `${numberWithCommas(meta.price)}원`;
+  if (!meta.name && !meta.image) return fallbackUrlItem(url);
   return meta;
 }
 
 async function fetchText(url, accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8") {
-  const response = await fetch(url, {
-    headers: {
-      "accept": accept,
-      "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    },
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 9000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "accept": accept,
+        "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      },
+    });
 
-  if (!response.ok) throw new Error(`Fetch failed ${response.status}`);
-  return response.text();
+    if (!response.ok) throw new Error(`Fetch failed ${response.status}`);
+    return response.text();
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("Fetch timeout");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function parseJsonLdProduct(html) {
@@ -378,6 +453,38 @@ function parseJsonLdProduct(html) {
     }
   }
   return {};
+}
+
+function parseNextData(html) {
+  const match = html.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (!match) return null;
+  try {
+    return JSON.parse(decodeHtml(match[1].trim()));
+  } catch {
+    return null;
+  }
+}
+
+function findProductLikeObject(value, depth = 0) {
+  if (!value || depth > 8) return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findProductLikeObject(entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  const keys = Object.keys(value);
+  const hasName = keys.some((key) => /^(name|productName|goodsName|title)$/i.test(key));
+  const hasImage = keys.some((key) => /image|thumbnail|goodsImage/i.test(key));
+  const hasPrice = keys.some((key) => /price|amount/i.test(key));
+  if (hasName && (hasImage || hasPrice)) return value;
+  for (const entry of Object.values(value)) {
+    const found = findProductLikeObject(entry, depth + 1);
+    if (found) return found;
+  }
+  return null;
 }
 
 function findProductJsonLd(value) {
@@ -507,9 +614,24 @@ function readJsonLdPrice(product) {
   return offers?.price || offers?.lowPrice || "";
 }
 
+function readDeepBrand(product) {
+  const brand = product?.brand || product?.brandName || product?.brandNameKor || product?.maker;
+  if (!brand) return "";
+  if (typeof brand === "string") return brand;
+  return brand.name || "";
+}
+
 function firstImage(image) {
   if (Array.isArray(image)) return image[0] || "";
+  if (typeof image === "object") return image?.url || image?.src || "";
   return image || "";
+}
+
+function cleanImageUrl(value) {
+  return decodeHtml(String(value || ""))
+    .replace(/\\u002F/g, "/")
+    .replace(/\\/g, "")
+    .trim();
 }
 
 function absolutize(value, base) {
@@ -521,13 +643,49 @@ function absolutize(value, base) {
   }
 }
 
+function readHtmlTitle(html) {
+  return decodeHtml(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "");
+}
+
+function fallbackUrlItem(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    parsed = new URL(`https://${String(url).replace(/^\/+/, "")}`);
+  }
+  return {
+    store: /musinsa\.com/i.test(parsed.hostname) ? "musinsa" : "generic",
+    brand: "",
+    name: parsed.hostname.replace(/^www\./, ""),
+    price: "",
+    image: "",
+    url,
+  };
+}
+
+function weatherCodeLabel(code) {
+  if ([0].includes(code)) return { label: "맑음", icon: "SUN" };
+  if ([1, 2, 3].includes(code)) return { label: "구름 조금", icon: "CLD" };
+  if ([45, 48].includes(code)) return { label: "안개", icon: "FOG" };
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return { label: "비", icon: "RAIN" };
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return { label: "눈", icon: "SNOW" };
+  if ([95, 96, 99].includes(code)) return { label: "뇌우", icon: "!" };
+  return { label: "날씨 정보", icon: "--" };
+}
+
 function decodeHtml(value) {
   return clean(value)
+    .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+function isBlankMetaValue(value) {
+  return !clean(value).replace(/&nbsp;|\s|[\u00a0]/g, "");
 }
 
 function clean(value) {

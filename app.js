@@ -16,6 +16,9 @@ const state = {
   canvasScale: 1,
   selection: null,
   directImageData: "",
+  outfitWeather: null,
+  outfitInspiration: [],
+  outfitRecommendations: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -34,6 +37,7 @@ function init() {
   bindUrlFlow();
   bindDirectFlow();
   bindWardrobeTools();
+  bindOutfitFlow();
   renderQueue();
   renderWardrobe();
 }
@@ -92,7 +96,7 @@ function bindManualSearchFlow() {
     const candidate = addCandidate({
       brand,
       name,
-      store: $("#manualStore").value,
+      store: "musinsa",
       source: "직접 검색",
     });
     renderQueue();
@@ -174,6 +178,33 @@ function bindWardrobeTools() {
   $("#searchFilter").addEventListener("input", renderWardrobe);
   $("#exportBtn").addEventListener("click", exportWardrobe);
   $("#importInput").addEventListener("change", importWardrobe);
+}
+
+function bindOutfitFlow() {
+  $("#outfitForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const locationName = cleanName($("#weatherLocation").value) || "Seoul";
+    const concept = $("#outfitConcept").value;
+
+    state.outfitWeather = fallbackWeather(locationName);
+    state.outfitInspiration = generateInspirations(state.outfitWeather, concept);
+    state.outfitRecommendations = [];
+    renderOutfitBoard({ loading: true });
+
+    try {
+      state.outfitWeather = await fetchWeather(locationName);
+    } catch (error) {
+      console.warn(error);
+      state.outfitWeather = fallbackWeather(locationName, error.message);
+    }
+
+    state.outfitInspiration = generateInspirations(state.outfitWeather, concept);
+    renderOutfitBoard({ loading: true });
+
+    await delay(850);
+    state.outfitRecommendations = buildOutfitRecommendations(concept, state.outfitWeather);
+    renderOutfitBoard();
+  });
 }
 
 function drawOrderImage() {
@@ -280,7 +311,7 @@ async function runOcr() {
 }
 
 function makeTextCandidates() {
-  const items = parseOrderItems($("#ocrText").value, $("#storeSelect").value);
+  const items = parseOrderItems($("#ocrText").value, "musinsa");
 
   items.forEach((item) => {
     const inferred = inferFromText(`${item.brand} ${item.name} ${item.option}`);
@@ -289,7 +320,7 @@ function makeTextCandidates() {
       brand: item.brand || inferred.brand,
       option: item.option,
       price: item.price,
-      store: $("#storeSelect").value,
+      store: "musinsa",
       category: inferred.category,
       color: inferred.color,
       style: inferred.style,
@@ -311,7 +342,7 @@ function addCandidate(data) {
     brand: data.brand || inferred.brand,
     option: data.option || "",
     price: data.price || "",
-    store: data.store || $("#storeSelect")?.value || "generic",
+    store: data.store || "musinsa",
     productUrl: data.productUrl || "",
     category: data.category || inferred.category,
     color: data.color || inferred.color,
@@ -488,6 +519,7 @@ async function fetchProductLookup(candidate) {
     throw new Error(payload.message || payload.error || "상품 조회 서버에서 응답을 받지 못했어요.");
   }
   return {
+    source: payload.source || "",
     results: Array.isArray(payload.results) ? payload.results : [],
     debug: payload.debug || null,
   };
@@ -575,6 +607,276 @@ function renderWardrobe() {
     });
     wardrobeEl.append(card);
   });
+
+  if (state.outfitWeather || state.outfitRecommendations.length) {
+    state.outfitRecommendations = buildOutfitRecommendations($("#outfitConcept")?.value || "캐주얼", state.outfitWeather || fallbackWeather("Seoul"));
+    renderOutfitBoard();
+  }
+}
+
+function renderOutfitBoard(options = {}) {
+  const board = $("#outfitBoard");
+  if (!board) return;
+
+  if (!state.outfitWeather && !state.outfitRecommendations.length && !options.loading) {
+    board.innerHTML = `
+      <div class="outfit-empty">
+        상의와 하의를 몇 개 등록한 뒤 컨셉을 선택하면, 날씨와 분위기에 맞춰 두 가지 조합을 추천합니다.
+      </div>
+    `;
+    return;
+  }
+
+  const weather = state.outfitWeather || fallbackWeather($("#weatherLocation")?.value || "Seoul");
+  const inspirations = state.outfitInspiration.length
+    ? state.outfitInspiration
+    : generateInspirations(weather, $("#outfitConcept")?.value || "캐주얼");
+
+  board.innerHTML = `
+    <div class="weather-card">
+      <span class="weather-mark">${escapeHtml(weather.icon || "--")}</span>
+      <div>
+        <p class="eyebrow">Today's Weather</p>
+        <h3>${escapeHtml(weather.location || "Seoul")}</h3>
+        <strong>${Math.round(weather.temperature)}°C</strong>
+        <p>${escapeHtml(weather.summary)}</p>
+        <small>${escapeHtml(weather.detail)}</small>
+      </div>
+    </div>
+    <div class="inspiration-panel">
+      <div class="outfit-subhead">
+        <p class="eyebrow">Inspiration</p>
+        ${options.loading ? `<span class="loading-dot">분석 중</span>` : `<span>참고 후보</span>`}
+      </div>
+      <div class="inspiration-grid">
+        ${inspirations.map(renderInspirationCard).join("")}
+      </div>
+    </div>
+    <div class="recommendation-panel">
+      <div class="outfit-subhead">
+        <p class="eyebrow">Your Closet</p>
+        <span>${options.loading ? "조합 찾는 중" : "추천 결과"}</span>
+      </div>
+      ${
+        options.loading
+          ? `<div class="loading-block"><span></span><p>등록된 옷의 색상, 계절감, 무드를 참고 후보와 맞춰보고 있어요.</p></div>`
+          : renderRecommendations()
+      }
+    </div>
+  `;
+}
+
+function renderInspirationCard(item) {
+  return `
+    <article class="inspiration-card">
+      <div class="swatches">
+        ${item.swatches.map((color) => `<span style="background:${escapeAttr(color)}"></span>`).join("")}
+      </div>
+      <h3>${escapeHtml(item.title)}</h3>
+      <p>${escapeHtml(item.description)}</p>
+    </article>
+  `;
+}
+
+function renderRecommendations() {
+  if (!state.outfitRecommendations.length) {
+    return `
+      <div class="outfit-empty compact">
+        추천하려면 옷장에 상의와 하의가 각각 1개 이상 필요합니다. OCR, URL, 직접 사진 중 편한 방식으로 먼저 등록해 주세요.
+      </div>
+    `;
+  }
+
+  return `
+    <div class="recommendation-grid">
+      ${state.outfitRecommendations
+        .map(
+          (pair, index) => `
+            <article class="recommendation-card">
+              <div class="recommendation-rank">후보 ${index + 1}</div>
+              <div class="fit-items">
+                ${renderFitItem(pair.top, "상의")}
+                ${renderFitItem(pair.bottom, "하의")}
+              </div>
+              <p>${escapeHtml(pair.reason)}</p>
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderFitItem(item, label) {
+  return `
+    <div class="fit-item">
+      <div class="fit-media">
+        ${item.image ? `<img src="${item.image}" alt="${escapeAttr(item.name)}" />` : `<span class="pill">이미지 없음</span>`}
+      </div>
+      <div>
+        <span>${label}</span>
+        <strong>${escapeHtml(item.name)}</strong>
+        <small>${escapeHtml([item.brand, item.color, item.style].filter(Boolean).join(" · "))}</small>
+      </div>
+    </div>
+  `;
+}
+
+async function fetchWeather(locationName) {
+  if (location.protocol === "file:") {
+    throw new Error("서버 실행이 필요합니다.");
+  }
+  const response = await fetch(`/api/weather?location=${encodeURIComponent(locationName)}`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || "날씨 정보를 가져오지 못했어요.");
+  return payload;
+}
+
+function buildOutfitRecommendations(concept, weather) {
+  const tops = state.wardrobe.filter((item) => getItemCategory(item) === "상의");
+  const bottoms = state.wardrobe.filter((item) => getItemCategory(item) === "하의");
+  const pairs = [];
+
+  tops.forEach((top) => {
+    bottoms.forEach((bottom) => {
+      pairs.push({
+        top,
+        bottom,
+        score: scoreOutfitPair(top, bottom, concept, weather),
+        reason: buildOutfitReason(top, bottom, concept, weather),
+      });
+    });
+  });
+
+  return pairs.sort((a, b) => b.score - a.score).slice(0, 2);
+}
+
+function scoreOutfitPair(top, bottom, concept, weather) {
+  const temp = Number(weather?.temperature ?? 22);
+  let score = 0;
+  score += scoreWeatherFit(top, temp) * 2;
+  score += scoreWeatherFit(bottom, temp);
+  score += scoreConceptFit(top, concept);
+  score += scoreConceptFit(bottom, concept);
+  score += scoreColorHarmony(top, bottom);
+  if (top.image) score += 1;
+  if (bottom.image) score += 1;
+  return score;
+}
+
+function scoreWeatherFit(item, temp) {
+  const text = normalizeText([item.name, item.option, item.season].join(" "));
+  if (temp >= 27) {
+    if (/반팔|티셔츠|린넨|short|tee|t-shirt|여름/.test(text)) return 4;
+    if (/니트|기모|울|패딩|겨울/.test(text)) return -3;
+  }
+  if (temp <= 12) {
+    if (/니트|울|기모|겨울|긴팔|후드/.test(text)) return 4;
+    if (/반팔|린넨|여름/.test(text)) return -2;
+  }
+  if (temp > 12 && temp < 27 && /사계절|봄 가을|봄\/가을|셔츠|데님|슬랙스/.test(text)) return 3;
+  return 1;
+}
+
+function scoreConceptFit(item, concept) {
+  const text = normalizeText([item.name, item.style, item.category].join(" "));
+  const rules = {
+    "캐주얼": /캐주얼|후드|맨투맨|데님|와이드|티셔츠|sweat|hoodie|denim|tee/,
+    "포멀": /포멀|셔츠|슬랙스|블레이저|카라|로퍼|shirt|slacks|blazer/,
+    "미니멀": /미니멀|무지|솔리드|블랙|화이트|그레이|네이비|셔츠|슬랙스/,
+    "스트릿": /스트릿|와이드|오버|카고|후드|그래픽|denim|cargo|oversize/,
+    "데이트": /셔츠|니트|가디건|데님|크림|아이보리|블루|minimal|knit/,
+    "출근": /셔츠|슬랙스|블레이저|니트|포멀|미니멀|shirt|slacks/,
+  };
+  return rules[concept]?.test(text) ? 4 : 1;
+}
+
+function scoreColorHarmony(top, bottom) {
+  const topColor = normalizeColor(top.color || top.name);
+  const bottomColor = normalizeColor(bottom.color || bottom.name);
+  if (!topColor || !bottomColor) return 1;
+  if (topColor === bottomColor && ["블랙", "화이트/아이보리", "그레이", "네이비"].includes(topColor)) return 2;
+  const goodPairs = [
+    ["블랙", "블루/데님"],
+    ["화이트/아이보리", "블루/데님"],
+    ["그레이", "블랙"],
+    ["네이비", "화이트/아이보리"],
+    ["베이지", "블랙"],
+    ["카키/올리브", "블랙"],
+  ];
+  return goodPairs.some(([a, b]) => (topColor === a && bottomColor === b) || (topColor === b && bottomColor === a)) ? 4 : 1;
+}
+
+function buildOutfitReason(top, bottom, concept, weather) {
+  const temp = Math.round(Number(weather?.temperature ?? 22));
+  const topColor = top.color || "상의 색감";
+  const bottomColor = bottom.color || "하의 색감";
+  return `${temp}°C 날씨에 ${top.name}의 ${topColor} 톤과 ${bottom.name}의 ${bottomColor} 톤이 잘 맞고, ${concept} 분위기에 가까운 조합입니다.`;
+}
+
+function getItemCategory(item) {
+  return item.category || inferFromText([item.name, item.option].join(" ")).category;
+}
+
+function normalizeColor(value) {
+  return inferFromText(value).color || cleanName(value);
+}
+
+function generateInspirations(weather, concept) {
+  const temp = Number(weather?.temperature ?? 22);
+  const climate = temp >= 27 ? "hot" : temp <= 12 ? "cold" : "mild";
+  const base = {
+    "캐주얼": [
+      ["가벼운 티셔츠 + 와이드 데님", "편하고 시원한 비율을 우선한 데일리 조합", ["#f7f4ec", "#1f2937", "#6b7280"]],
+      ["셔츠 + 워싱 데님", "깔끔하지만 너무 차려입은 느낌은 덜한 조합", ["#ffffff", "#374151", "#93a4b7"]],
+    ],
+    "포멀": [
+      ["셔츠 + 슬랙스", "단정한 자리에서 가장 안정적인 상하의 조합", ["#ffffff", "#111827", "#9ca3af"]],
+      ["니트 또는 카라 상의 + 어두운 팬츠", "격식은 유지하되 부담은 낮춘 조합", ["#d8d0c0", "#1f2937", "#374151"]],
+    ],
+    "미니멀": [
+      ["무채색 상의 + 스트레이트 팬츠", "색을 줄이고 실루엣으로 정리한 조합", ["#f9fafb", "#111827", "#6b7280"]],
+      ["솔리드 셔츠 + 블랙/네이비 하의", "장식보다 핏과 톤을 우선한 조합", ["#e5e7eb", "#0f172a", "#ffffff"]],
+    ],
+    "스트릿": [
+      ["오버핏 상의 + 와이드 팬츠", "상체와 하체 모두 여유 있는 실루엣", ["#111827", "#4b5563", "#d1d5db"]],
+      ["그래픽/포켓 디테일 + 데님", "한 가지 디테일을 중심으로 잡는 조합", ["#0f172a", "#64748b", "#f8fafc"]],
+    ],
+    "데이트": [
+      ["셔츠/니트 + 연청 또는 블랙 팬츠", "깔끔하고 부드러운 인상을 주는 조합", ["#f5efe5", "#93a4b7", "#111827"]],
+      ["톤 다운 상의 + 와이드 데님", "꾸민 느낌과 편안함의 균형을 잡은 조합", ["#6b7280", "#d1d5db", "#1f2937"]],
+    ],
+    "출근": [
+      ["셔츠 + 슬랙스", "아침에 빠르게 고르기 좋은 업무용 조합", ["#ffffff", "#111827", "#6b7280"]],
+      ["니트/카라 상의 + 다크 팬츠", "실내외 온도 차를 고려하기 쉬운 조합", ["#d8d0c0", "#1f2937", "#e5e7eb"]],
+    ],
+  };
+  const weatherHint =
+    climate === "hot"
+      ? ["반팔/얇은 셔츠 + 밝거나 워싱 있는 하의", "낮 기온이 높아 통풍과 밝은 톤을 우선", ["#ffffff", "#8fb3c9", "#111827"]]
+      : climate === "cold"
+        ? ["긴팔/니트 + 두께감 있는 팬츠", "쌀쌀한 날씨라 상의 보온감을 먼저 보는 조합", ["#374151", "#8b7355", "#111827"]]
+        : ["셔츠/긴팔 + 데님 또는 슬랙스", "일교차에 대응하기 쉬운 사계절 조합", ["#f8fafc", "#334155", "#6b7280"]];
+
+  return [weatherHint, ...(base[concept] || base["캐주얼"])]
+    .slice(0, 4)
+    .map(([title, description, swatches]) => ({ title, description, swatches }));
+}
+
+function fallbackWeather(locationName, error = "") {
+  return {
+    location: locationName,
+    temperature: 24,
+    min: 19,
+    max: 27,
+    icon: "--",
+    summary: error ? "실시간 날씨 연결 실패" : "날씨 대기 중",
+    detail: error ? "서버나 외부 날씨 API 연결을 확인해 주세요." : "추천 버튼을 누르면 현재 날씨를 가져옵니다.",
+  };
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function normalizeItem(data) {

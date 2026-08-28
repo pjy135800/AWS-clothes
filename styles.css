@@ -134,6 +134,7 @@ button:disabled {
   grid-template-columns: minmax(330px, 0.78fr) minmax(360px, 1.22fr);
   gap: 18px;
   align-items: start;
+  margin-bottom: 18px;
 }
 
 .panel {
@@ -275,6 +276,279 @@ textarea:focus {
   display: grid;
   gap: 12px;
   margin-top: 16px;
+}
+
+.outfit-panel {
+  margin-bottom: 18px;
+}
+
+.outfit-controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(120px, 150px) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.outfit-board {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(340px, 1.2fr);
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.outfit-empty {
+  grid-column: 1 / -1;
+  min-height: 132px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  padding: 18px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.outfit-empty.compact {
+  min-height: 112px;
+}
+
+.weather-card,
+.inspiration-panel,
+.recommendation-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 14px;
+}
+
+.weather-card {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.weather-mark {
+  width: 70px;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f3f6f1;
+  display: grid;
+  place-items: center;
+  color: var(--accent-3);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.weather-card h3,
+.weather-card p,
+.weather-card small,
+.inspiration-card h3,
+.inspiration-card p,
+.recommendation-card p {
+  margin: 0;
+}
+
+.weather-card h3 {
+  margin-bottom: 8px;
+  font-size: 18px;
+}
+
+.weather-card strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.weather-card p {
+  margin-bottom: 6px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.weather-card small,
+.inspiration-card p,
+.fit-item small,
+.recommendation-card p {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.inspiration-panel,
+.recommendation-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.recommendation-panel {
+  grid-column: 1 / -1;
+}
+
+.outfit-subhead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.inspiration-grid,
+.recommendation-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.inspiration-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.inspiration-card,
+.recommendation-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 12px;
+}
+
+.inspiration-card {
+  display: grid;
+  gap: 10px;
+}
+
+.inspiration-card h3 {
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.swatches span {
+  width: 28px;
+  aspect-ratio: 1;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 50%;
+}
+
+.recommendation-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.recommendation-card {
+  display: grid;
+  gap: 12px;
+}
+
+.recommendation-rank {
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fit-items {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.fit-item {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.fit-media {
+  width: 76px;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  background: #eef1ed;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.fit-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fit-item span,
+.fit-item strong,
+.fit-item small {
+  display: block;
+}
+
+.fit-item span {
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.fit-item strong {
+  margin: 4px 0;
+  line-height: 1.3;
+}
+
+.loading-dot {
+  position: relative;
+  padding-left: 18px;
+}
+
+.loading-dot::before,
+.loading-block span {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 0.9s ease-in-out infinite alternate;
+}
+
+.loading-dot::before {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.loading-block {
+  min-height: 96px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.loading-block p {
+  margin: 0;
+}
+
+@keyframes pulse {
+  from {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .queue:empty::before,
@@ -480,6 +754,12 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .outfit-board,
+  .inspiration-grid,
+  .recommendation-grid {
+    grid-template-columns: 1fr;
+  }
+
   .wardrobe {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -505,8 +785,14 @@ textarea:focus {
 
   .topbar-actions > *,
   .toolbar > *,
-  .filters > * {
+  .filters > *,
+  .outfit-controls > * {
     flex: 1 1 150px;
+  }
+
+  .outfit-controls {
+    grid-template-columns: 1fr;
+    width: 100%;
   }
 
   .candidate {
@@ -522,7 +808,8 @@ textarea:focus {
   .grid-2,
   .ocr-options,
   .tabs,
-  .wardrobe {
+  .wardrobe,
+  .fit-items {
     grid-template-columns: 1fr;
   }
 }

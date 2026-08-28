@@ -39,16 +39,6 @@
               <input id="orderImage" type="file" accept="image/*" />
             </div>
 
-            <div class="field">
-              <label for="storeSelect">쇼핑몰</label>
-              <select id="storeSelect">
-                <option value="musinsa">무신사 주문내역</option>
-                <option value="zara">ZARA 주문내역</option>
-                <option value="other">기타 쇼핑몰 주문내역</option>
-                <option value="generic">일반 주문내역</option>
-              </select>
-            </div>
-
             <div class="toolbar">
               <button id="ocrBtn" type="button" disabled>OCR 실행 후 상품 정리</button>
             </div>
@@ -78,14 +68,6 @@
 
           <section id="searchTab" class="tab-panel">
             <form id="manualSearchForm" class="stack">
-              <div class="field">
-                <label for="manualStore">검색할 쇼핑몰</label>
-                <select id="manualStore">
-                  <option value="musinsa">무신사</option>
-                  <option value="zara">ZARA</option>
-                  <option value="other">기타 웹 검색</option>
-                </select>
-              </div>
               <div class="field">
                 <label for="manualBrand">브랜드</label>
                 <input id="manualBrand" type="text" placeholder="예: 데꼬로소" />
@@ -160,6 +142,32 @@
           </div>
           <div id="queue" class="queue"></div>
         </section>
+      </section>
+
+      <section class="panel outfit-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Outfit Preview</p>
+            <h2>오늘 코디 추천</h2>
+          </div>
+          <form id="outfitForm" class="outfit-controls">
+            <input id="weatherLocation" type="text" value="Seoul" aria-label="날씨 지역" />
+            <select id="outfitConcept" aria-label="코디 컨셉">
+              <option value="캐주얼">캐주얼</option>
+              <option value="포멀">포멀</option>
+              <option value="미니멀">미니멀</option>
+              <option value="스트릿">스트릿</option>
+              <option value="데이트">데이트</option>
+              <option value="출근">출근</option>
+            </select>
+            <button type="submit">오늘 코디 추천 받기</button>
+          </form>
+        </div>
+        <div id="outfitBoard" class="outfit-board">
+          <div class="outfit-empty">
+            상의와 하의를 몇 개 등록한 뒤 컨셉을 선택하면, 날씨와 분위기에 맞춰 두 가지 조합을 추천합니다.
+          </div>
+        </div>
       </section>
 
       <section class="panel wardrobe-panel">

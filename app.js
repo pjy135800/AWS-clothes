@@ -19,6 +19,8 @@ const state = {
   outfitWeather: null,
   outfitInspiration: [],
   outfitRecommendations: [],
+  outfitRequestId: "",
+  outfitLoading: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -185,23 +187,38 @@ function bindOutfitFlow() {
     event.preventDefault();
     const locationName = cleanName($("#weatherLocation").value) || "Seoul";
     const concept = $("#outfitConcept").value;
+    const requestId = crypto.randomUUID();
 
+    state.outfitRequestId = requestId;
+    state.outfitLoading = true;
     state.outfitWeather = fallbackWeather(locationName);
     state.outfitInspiration = generateInspirations(state.outfitWeather, concept);
-    state.outfitRecommendations = [];
+    state.outfitRecommendations = buildOutfitRecommendations(concept, state.outfitWeather);
     renderOutfitBoard({ loading: true });
 
-    try {
-      state.outfitWeather = await fetchWeather(locationName);
-    } catch (error) {
+    const quickTimer = window.setTimeout(() => {
+      if (state.outfitRequestId !== requestId || !state.outfitLoading) return;
+      state.outfitLoading = false;
+      state.outfitRecommendations = buildOutfitRecommendations(concept, state.outfitWeather);
+      renderOutfitBoard();
+    }, 450);
+
+    const weatherPromise = fetchWeather(locationName, 1600).catch((error) => {
       console.warn(error);
-      state.outfitWeather = fallbackWeather(locationName, error.message);
-    }
+      return fallbackWeather(locationName, error.message);
+    });
+    const inspirationPromise = fetchStyleInspirations(concept, state.outfitWeather, 1600).catch((error) => {
+      console.warn(error);
+      return generateInspirations(state.outfitWeather, concept);
+    });
 
-    state.outfitInspiration = generateInspirations(state.outfitWeather, concept);
-    renderOutfitBoard({ loading: true });
+    const [weather, inspirations] = await Promise.all([weatherPromise, inspirationPromise]);
+    window.clearTimeout(quickTimer);
+    if (state.outfitRequestId !== requestId) return;
 
-    await delay(850);
+    state.outfitLoading = false;
+    state.outfitWeather = weather;
+    state.outfitInspiration = inspirations.length ? inspirations : generateInspirations(weather, concept);
     state.outfitRecommendations = buildOutfitRecommendations(concept, state.outfitWeather);
     renderOutfitBoard();
   });
@@ -311,7 +328,8 @@ async function runOcr() {
 }
 
 function makeTextCandidates() {
-  const items = parseOrderItems($("#ocrText").value, "musinsa");
+  const items = prioritizeOrderItems(parseOrderItems($("#ocrText").value, "musinsa")).slice(0, 8);
+  state.queue = state.queue.filter((candidate) => candidate.source !== "OCR 상품 정리");
 
   items.forEach((item) => {
     const inferred = inferFromText(`${item.brand} ${item.name} ${item.option}`);
@@ -669,8 +687,8 @@ function renderOutfitBoard(options = {}) {
 function renderInspirationCard(item) {
   return `
     <article class="inspiration-card">
-      <div class="swatches">
-        ${item.swatches.map((color) => `<span style="background:${escapeAttr(color)}"></span>`).join("")}
+      <div class="inspiration-media">
+        ${item.image ? `<img src="${escapeAttr(item.image)}" alt="${escapeAttr(item.title)}" />` : ""}
       </div>
       <h3>${escapeHtml(item.title)}</h3>
       <p>${escapeHtml(item.description)}</p>
@@ -722,14 +740,39 @@ function renderFitItem(item, label) {
   `;
 }
 
-async function fetchWeather(locationName) {
+async function fetchWeather(locationName, timeout = 3500) {
   if (location.protocol === "file:") {
     throw new Error("서버 실행이 필요합니다.");
   }
-  const response = await fetch(`/api/weather?location=${encodeURIComponent(locationName)}`);
+  const response = await fetchWithTimeout(`/api/weather?location=${encodeURIComponent(locationName)}`, timeout);
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.message || "날씨 정보를 가져오지 못했어요.");
   return payload;
+}
+
+async function fetchStyleInspirations(concept, weather, timeout = 3500) {
+  if (location.protocol === "file:") {
+    return generateInspirations(weather, concept);
+  }
+  const params = new URLSearchParams({
+    concept,
+    temp: String(Math.round(Number(weather?.temperature ?? 24))),
+    condition: weather?.summary || "",
+  });
+  const response = await fetchWithTimeout(`/api/style-inspirations?${params.toString()}`, timeout);
+  const payload = await response.json();
+  if (!response.ok || !Array.isArray(payload.results)) throw new Error(payload.message || "참고 이미지를 가져오지 못했어요.");
+  return payload.results.slice(0, 3);
+}
+
+async function fetchWithTimeout(url, timeout) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeout);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function buildOutfitRecommendations(concept, weather) {
@@ -825,42 +868,84 @@ function normalizeColor(value) {
 function generateInspirations(weather, concept) {
   const temp = Number(weather?.temperature ?? 22);
   const climate = temp >= 27 ? "hot" : temp <= 12 ? "cold" : "mild";
+  const images = inspirationImagesFor(concept);
   const base = {
     "캐주얼": [
-      ["가벼운 티셔츠 + 와이드 데님", "편하고 시원한 비율을 우선한 데일리 조합", ["#f7f4ec", "#1f2937", "#6b7280"]],
-      ["셔츠 + 워싱 데님", "깔끔하지만 너무 차려입은 느낌은 덜한 조합", ["#ffffff", "#374151", "#93a4b7"]],
+      ["가벼운 티셔츠 + 와이드 데님", "편하고 시원한 비율을 우선한 데일리 조합", images[1]],
+      ["셔츠 + 워싱 데님", "깔끔하지만 너무 차려입은 느낌은 덜한 조합", images[2]],
     ],
     "포멀": [
-      ["셔츠 + 슬랙스", "단정한 자리에서 가장 안정적인 상하의 조합", ["#ffffff", "#111827", "#9ca3af"]],
-      ["니트 또는 카라 상의 + 어두운 팬츠", "격식은 유지하되 부담은 낮춘 조합", ["#d8d0c0", "#1f2937", "#374151"]],
+      ["셔츠 + 슬랙스", "단정한 자리에서 가장 안정적인 상하의 조합", images[1]],
+      ["니트 또는 카라 상의 + 어두운 팬츠", "격식은 유지하되 부담은 낮춘 조합", images[2]],
     ],
     "미니멀": [
-      ["무채색 상의 + 스트레이트 팬츠", "색을 줄이고 실루엣으로 정리한 조합", ["#f9fafb", "#111827", "#6b7280"]],
-      ["솔리드 셔츠 + 블랙/네이비 하의", "장식보다 핏과 톤을 우선한 조합", ["#e5e7eb", "#0f172a", "#ffffff"]],
+      ["무채색 상의 + 스트레이트 팬츠", "색을 줄이고 실루엣으로 정리한 조합", images[1]],
+      ["솔리드 셔츠 + 블랙/네이비 하의", "장식보다 핏과 톤을 우선한 조합", images[2]],
     ],
     "스트릿": [
-      ["오버핏 상의 + 와이드 팬츠", "상체와 하체 모두 여유 있는 실루엣", ["#111827", "#4b5563", "#d1d5db"]],
-      ["그래픽/포켓 디테일 + 데님", "한 가지 디테일을 중심으로 잡는 조합", ["#0f172a", "#64748b", "#f8fafc"]],
+      ["오버핏 상의 + 와이드 팬츠", "상체와 하체 모두 여유 있는 실루엣", images[1]],
+      ["그래픽/포켓 디테일 + 데님", "한 가지 디테일을 중심으로 잡는 조합", images[2]],
     ],
     "데이트": [
-      ["셔츠/니트 + 연청 또는 블랙 팬츠", "깔끔하고 부드러운 인상을 주는 조합", ["#f5efe5", "#93a4b7", "#111827"]],
-      ["톤 다운 상의 + 와이드 데님", "꾸민 느낌과 편안함의 균형을 잡은 조합", ["#6b7280", "#d1d5db", "#1f2937"]],
+      ["셔츠/니트 + 연청 또는 블랙 팬츠", "깔끔하고 부드러운 인상을 주는 조합", images[1]],
+      ["톤 다운 상의 + 와이드 데님", "꾸민 느낌과 편안함의 균형을 잡은 조합", images[2]],
     ],
     "출근": [
-      ["셔츠 + 슬랙스", "아침에 빠르게 고르기 좋은 업무용 조합", ["#ffffff", "#111827", "#6b7280"]],
-      ["니트/카라 상의 + 다크 팬츠", "실내외 온도 차를 고려하기 쉬운 조합", ["#d8d0c0", "#1f2937", "#e5e7eb"]],
+      ["셔츠 + 슬랙스", "아침에 빠르게 고르기 좋은 업무용 조합", images[1]],
+      ["니트/카라 상의 + 다크 팬츠", "실내외 온도 차를 고려하기 쉬운 조합", images[2]],
     ],
   };
   const weatherHint =
     climate === "hot"
-      ? ["반팔/얇은 셔츠 + 밝거나 워싱 있는 하의", "낮 기온이 높아 통풍과 밝은 톤을 우선", ["#ffffff", "#8fb3c9", "#111827"]]
+      ? ["반팔/얇은 셔츠 + 밝거나 워싱 있는 하의", "낮 기온이 높아 통풍과 밝은 톤을 우선", images[0]]
       : climate === "cold"
-        ? ["긴팔/니트 + 두께감 있는 팬츠", "쌀쌀한 날씨라 상의 보온감을 먼저 보는 조합", ["#374151", "#8b7355", "#111827"]]
-        : ["셔츠/긴팔 + 데님 또는 슬랙스", "일교차에 대응하기 쉬운 사계절 조합", ["#f8fafc", "#334155", "#6b7280"]];
+        ? ["긴팔/니트 + 두께감 있는 팬츠", "쌀쌀한 날씨라 상의 보온감을 먼저 보는 조합", images[0]]
+        : ["셔츠/긴팔 + 데님 또는 슬랙스", "일교차에 대응하기 쉬운 사계절 조합", images[0]];
 
   return [weatherHint, ...(base[concept] || base["캐주얼"])]
-    .slice(0, 4)
-    .map(([title, description, swatches]) => ({ title, description, swatches }));
+    .slice(0, 3)
+    .map(([title, description, image]) => ({ title, description, image, source: "fallback" }));
+}
+
+function inspirationImagesFor(concept) {
+  const common = [
+    "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+    "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=640&q=80",
+    "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+  ];
+  const map = {
+    "캐주얼": [
+      "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+    ],
+    "포멀": [
+      "https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1508243529287-e21914733111?auto=format&fit=crop&w=640&q=80",
+    ],
+    "미니멀": [
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=640&q=80",
+    ],
+    "스트릿": [
+      "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1523398002811-999ca8dec234?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1506629905607-d9e297d33b54?auto=format&fit=crop&w=640&q=80",
+    ],
+    "데이트": [
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1503341455253-b2e723bb3dbb?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+    ],
+    "출근": [
+      "https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1508243529287-e21914733111?auto=format&fit=crop&w=640&q=80",
+    ],
+  };
+  return map[concept] || common;
 }
 
 function fallbackWeather(locationName, error = "") {
@@ -873,10 +958,6 @@ function fallbackWeather(locationName, error = "") {
     summary: error ? "실시간 날씨 연결 실패" : "날씨 대기 중",
     detail: error ? "서버나 외부 날씨 API 연결을 확인해 주세요." : "추천 버튼을 누르면 현재 날씨를 가져옵니다.",
   };
-}
-
-function delay(ms) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function normalizeItem(data) {
@@ -1019,8 +1100,29 @@ function dedupeItems(items) {
     const key = `${item.brand}|${item.name}|${item.option}`.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
-    return item.name.length >= 4;
+    return item.name.length >= 4 && isLikelyProductName(item.name);
   });
+}
+
+function prioritizeOrderItems(items) {
+  return [...items]
+    .map((item) => ({ ...item, quality: scoreOrderItemQuality(item) }))
+    .filter((item) => item.quality > 0)
+    .sort((a, b) => b.quality - a.quality)
+    .map(({ quality, ...item }) => item);
+}
+
+function scoreOrderItemQuality(item) {
+  const text = `${item.brand} ${item.name} ${item.option}`;
+  let score = 0;
+  if (item.brand) score += 3;
+  if (item.price) score += 2;
+  if (hasFashionKeyword(item.name)) score += 5;
+  if (item.name.length >= 8) score += 2;
+  if (item.name.length > 60) score -= 1;
+  if (isProductCodeLine(item.name) || isOptionLine(item.name) || isOrderNoise(item.name)) score -= 8;
+  if (/재\s*(구매|주문)|배송|후기|스냅|사이즈|size/i.test(text) && !hasFashionKeyword(item.name)) score -= 4;
+  return score;
 }
 
 function normalizeOcrLine(line) {
@@ -1036,9 +1138,9 @@ function normalizeOcrLine(line) {
 function splitPackedOrderLine(line) {
   return String(line || "")
     .replace(/(구매\s*확정|배송\s*완료|결제\s*완료|주문\s*완료)/g, "\n$1\n")
-    .replace(/(스냅\s*보기|후기\s*작성(?:[^0-9\n]*)?|배송\s*조회|재구매)/g, "\n$1\n")
+    .replace(/(스냅\s*보기|후기\s*작성(?:[^0-9\n]*)?|배송\s*조회|재\s*(?:구매|주문))/g, "\n$1\n")
     .replace(/((?:\d{1,3},)*\d{3}\s*원|\d+\s*원)/g, "\n$1\n")
-    .replace(/((?:Size[-\s]?\d+|[A-Z0-9_-]+(?:[._-][A-Z0-9_-]+)+|(?:블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED|BLACK|BLUE)[^/\n]{0,20})\s*\/\s*\d+\s*개)/gi, "\n$1\n")
+    .replace(/((?:사이즈\s*[:：-]?\s*)?(?:Size[-\s]?\d+|\b(?:XS|S|M|L|XL|XXL)\b|[A-Z0-9_-]+(?:[._-][A-Z0-9_-]+)+|(?:블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED|BLACK|BLUE)[^/\n]{0,20})\s*\/\s*\d+\s*개)/gi, "\n$1\n")
     .split(/\n+/);
 }
 
@@ -1049,9 +1151,9 @@ function splitLineFields(line) {
 
 function cleanProductNamePart(value) {
   return cleanName(value)
-    .replace(/구매\s*확정|배송\s*조회|재구매|스냅\s*보기|후기\s*작성.*$/g, " ")
+    .replace(/구매\s*확정|배송\s*조회|재\s*(구매|주문)|스냅\s*보기|후기\s*작성.*$/g, " ")
     .replace(/(?:\d{1,3},)*\d{3}\s*원|\d+\s*원/g, " ")
-    .replace(/(?:Size[-\s]?\d+|[A-Z0-9_-]+(?:[._-][A-Z0-9_-]+)+|(?:블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED)[^/]{0,20})\s*\/\s*\d+\s*개/gi, " ")
+    .replace(/(?:사이즈\s*[:：-]?\s*)?(?:Size[-\s]?\d+|\b(?:XS|S|M|L|XL|XXL)\b|[A-Z0-9_-]+(?:[._-][A-Z0-9_-]+)+|(?:블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED)[^/]{0,20})\s*\/\s*\d+\s*개/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -1083,7 +1185,11 @@ function isOrderNoise(line) {
     /^스냅\s*보기$/,
     /^후기\s*작성/,
     /배송\s*조회/,
-    /재구매/,
+    /재\s*(구매|주문)/,
+    /^사이즈\s*[:：-]?\s*(XS|S|M|L|XL|XXL|\d{1,3})$/i,
+    /^size\s*[-:：]?\s*(XS|S|M|L|XL|XXL|\d{1,3})$/i,
+    /^(XS|S|M|L|XL|XXL)$/i,
+    /^\d{2,3}\s*mm$/i,
     /^홈$/,
   ].some((regex) => regex.test(line));
 }
@@ -1119,9 +1225,11 @@ function isProductCodeLine(line) {
 function isOptionLine(line) {
   return (
     /\/\s*\d+\s*개/.test(line) ||
+    /^사이즈\s*[:：-]?\s*(XS|S|M|L|XL|XXL|\d{1,3})$/i.test(line) ||
     /Size[-\s]?\d+/i.test(line) ||
     /^\d{3}\s*mm/i.test(line) ||
-    /(블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED).*(XS|S|M|L|XL|XXL|\d{2,3})/i.test(line) ||
+    (!hasFashionKeyword(line) &&
+      /(블랙|네이비|화이트|아이보리|그레이|차콜|베이지|브라운|카키|올리브|핑크|그린|레드|BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|PINK|GREEN|RED).*(XS|S|M|L|XL|XXL|\d{2,3})/i.test(line)) ||
     /^[A-Z0-9_-]+[._-](BLACK|NAVY|WHITE|IVORY|GRAY|GREY|BEIGE|BROWN|KHAKI|OLIVE|DARK|LIGHT)/i.test(line)
   );
 }
@@ -1129,8 +1237,14 @@ function isOptionLine(line) {
 function isLikelyProductName(line) {
   if (line.length < 4 || line.length > 90) return false;
   if (isOrderNoise(line) || isPriceLine(line) || isDateLine(line)) return false;
+  if (isOptionLine(line) || isProductCodeLine(line)) return false;
   if (/^\d+$/.test(line)) return false;
+  if (/^(배송|후기|스냅|구매|재구매|재주문|사이즈|size)/i.test(line)) return false;
   return /[가-힣A-Za-z]/.test(line);
+}
+
+function hasFashionKeyword(value) {
+  return /셔츠|티셔츠|반팔|긴팔|니트|후드|후디|맨투맨|블라우스|탑|팬츠|바지|데님|진|슬랙스|쇼츠|반바지|스커트|자켓|재킷|점퍼|코트|가디건|신발|슈즈|구두|로퍼|부츠|운동화|shirt|tee|t-shirt|knit|hoodie|pants|jeans|denim|slacks|shorts|jacket|coat|shoes|boots|loafer/i.test(value);
 }
 
 function inferFromText(text) {

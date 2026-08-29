@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 8787);
+const weatherCache = new Map();
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -31,6 +32,12 @@ createServer(async (req, res) => {
 
     if (url.pathname === "/api/weather") {
       const payload = await weatherLookup(url.searchParams);
+      sendJson(res, 200, payload);
+      return;
+    }
+
+    if (url.pathname === "/api/style-inspirations") {
+      const payload = await styleInspirationsLookup(url.searchParams);
       sendJson(res, 200, payload);
       return;
     }
@@ -93,19 +100,21 @@ async function lookupProductUrl(productUrl) {
 
 async function weatherLookup(params) {
   const location = clean(params.get("location")) || "Seoul";
+  const cacheKey = normalizeText(location);
+  const cached = weatherCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.payload;
+
   try {
-    const placeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=ko&format=json`;
-    const placePayload = await fetchJson(placeUrl);
-    const place = placePayload?.results?.[0];
+    const place = knownPlace(location) || (await findWeatherPlace(location));
     if (!place) throw new Error("Location not found");
 
     const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto`;
-    const forecast = await fetchJson(forecastUrl);
+    const forecast = await fetchJson(forecastUrl, 3000);
     const current = forecast.current || {};
     const daily = forecast.daily || {};
     const code = current.weather_code;
     const condition = weatherCodeLabel(code);
-    return {
+    const payload = {
       location: [place.name, place.admin1, place.country].filter(Boolean).join(", "),
       temperature: Number(current.temperature_2m ?? daily.temperature_2m_max?.[0] ?? 24),
       feelsLike: Number(current.apparent_temperature ?? current.temperature_2m ?? 24),
@@ -118,6 +127,8 @@ async function weatherLookup(params) {
       detail: `최고 ${Math.round(Number(daily.temperature_2m_max?.[0] ?? current.temperature_2m ?? 0))}°C · 최저 ${Math.round(Number(daily.temperature_2m_min?.[0] ?? current.temperature_2m ?? 0))}°C · 강수확률 ${Number(daily.precipitation_probability_max?.[0] ?? 0)}%`,
       source: "open-meteo",
     };
+    weatherCache.set(cacheKey, { at: Date.now(), payload });
+    return payload;
   } catch (error) {
     return {
       location,
@@ -132,6 +143,51 @@ async function weatherLookup(params) {
       source: "fallback",
     };
   }
+}
+
+async function findWeatherPlace(location) {
+  const placeUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=ko&format=json`;
+  const placePayload = await fetchJson(placeUrl, 2200);
+  return placePayload?.results?.[0] || null;
+}
+
+function knownPlace(location) {
+  const key = normalizeText(location);
+  if (["seoul", "서울", "서울시", "서울특별시"].includes(key)) {
+    return {
+      name: "서울특별시",
+      admin1: "서울특별시",
+      country: "대한민국",
+      latitude: 37.5665,
+      longitude: 126.978,
+    };
+  }
+  return null;
+}
+
+async function styleInspirationsLookup(params) {
+  const concept = clean(params.get("concept")) || "캐주얼";
+  const temp = Number(params.get("temp") || 24);
+  const climate = temp >= 27 ? "summer" : temp <= 12 ? "winter" : "spring autumn";
+  const query = `${concept} ${climate} outfit pinterest`;
+  const debug = { queries: [{ type: "pinterest", query }], errors: [] };
+
+  try {
+    const images = await findPinterestImages(query);
+    if (images.length) {
+      return {
+        results: buildStyleCards(concept, temp, images, "pinterest"),
+        debug,
+      };
+    }
+  } catch (error) {
+    debug.errors.push(error.message);
+  }
+
+  return {
+    results: buildStyleCards(concept, temp, fallbackStyleImages(concept), "fallback"),
+    debug,
+  };
 }
 
 async function lookupMusinsa(input) {
@@ -382,8 +438,8 @@ async function findMusinsaProductUrls(query, debug = { queries: [], errors: [] }
   return [...urls];
 }
 
-async function fetchJson(url) {
-  const text = await fetchText(url, "application/json,text/plain,*/*");
+async function fetchJson(url, timeout = 9000) {
+  const text = await fetchText(url, "application/json,text/plain,*/*", timeout);
   return JSON.parse(text);
 }
 
@@ -418,9 +474,9 @@ async function readProductPage(url) {
   return meta;
 }
 
-async function fetchText(url, accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8") {
+async function fetchText(url, accept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", timeout = 9000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 9000);
+  const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(url, {
       signal: controller.signal,
@@ -440,6 +496,84 @@ async function fetchText(url, accept = "text/html,application/xhtml+xml,applicat
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function findPinterestImages(query) {
+  const url = `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(query)}`;
+  const html = await fetchText(url, "text/html,*/*", 3200);
+  const urls = new Set();
+  for (const match of html.matchAll(/https?:\\?\/\\?\/i\.pinimg\.com\\?\/[^"'\\<>\s]+/gi)) {
+    const image = cleanImageUrl(match[0]).replace(/\\u0026/g, "&");
+    if (!/\.(jpg|jpeg|png|webp)(\?|$)/i.test(image)) continue;
+    urls.add(image);
+    if (urls.size >= 3) break;
+  }
+  return [...urls];
+}
+
+function buildStyleCards(concept, temp, images, source) {
+  const climateTitle =
+    temp >= 27 ? "더운 날 가벼운 상하의" : temp <= 12 ? "쌀쌀한 날 긴팔 중심" : "일교차 대응 데일리";
+  const titles = {
+    "캐주얼": [climateTitle, "티셔츠/셔츠 + 데님", "편한 실루엣 중심"],
+    "포멀": [climateTitle, "셔츠 + 슬랙스", "단정한 무채색 조합"],
+    "미니멀": [climateTitle, "솔리드 톤 조합", "블랙/화이트/그레이 중심"],
+    "스트릿": [climateTitle, "오버핏 + 와이드 팬츠", "포켓/그래픽 포인트"],
+    "데이트": [climateTitle, "부드러운 톤 상의", "깔끔한 데님/슬랙스"],
+    "출근": [climateTitle, "셔츠 + 다크 팬츠", "업무용 미니멀 조합"],
+  };
+  const descriptions = [
+    `${Math.round(temp)}°C 날씨에 맞춘 ${concept} 참고 이미지`,
+    "옷장 안 상의/하의 색감 비교에 사용할 후보",
+    "최종 추천 전 분위기 기준으로 쓰는 예시",
+  ];
+  return (titles[concept] || titles["캐주얼"]).slice(0, 3).map((title, index) => ({
+    title,
+    description: descriptions[index],
+    image: images[index % images.length],
+    source,
+  }));
+}
+
+function fallbackStyleImages(concept) {
+  const common = [
+    "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+    "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=640&q=80",
+    "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+  ];
+  const map = {
+    "캐주얼": [
+      "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+    ],
+    "포멀": [
+      "https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1508243529287-e21914733111?auto=format&fit=crop&w=640&q=80",
+    ],
+    "미니멀": [
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?auto=format&fit=crop&w=640&q=80",
+    ],
+    "스트릿": [
+      "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1523398002811-999ca8dec234?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1506629905607-d9e297d33b54?auto=format&fit=crop&w=640&q=80",
+    ],
+    "데이트": [
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1503341455253-b2e723bb3dbb?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1529139574466-a303027c1d8b?auto=format&fit=crop&w=640&q=80",
+    ],
+    "출근": [
+      "https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=640&q=80",
+      "https://images.unsplash.com/photo-1508243529287-e21914733111?auto=format&fit=crop&w=640&q=80",
+    ],
+  };
+  return map[concept] || common;
 }
 
 function parseJsonLdProduct(html) {

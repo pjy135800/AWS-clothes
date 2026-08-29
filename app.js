@@ -144,14 +144,14 @@ function bindDirectFlow() {
     $("#directStyle").value ||= inferred.style;
   });
 
-  $("#directForm").addEventListener("submit", (event) => {
+  $("#directForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!state.directImageData) {
       toast("먼저 옷 사진을 올려주세요.");
       return;
     }
 
-    const item = normalizeItem({
+    const data = {
       image: state.directImageData,
       name: $("#directName").value || "이름 없는 옷",
       category: $("#directCategory").value,
@@ -159,7 +159,9 @@ function bindDirectFlow() {
       style: $("#directStyle").value,
       season: $("#directSeason").value,
       source: "직접 사진",
-    });
+    };
+    data.visual = await createItemVisualProfile(data);
+    const item = normalizeItem(data);
     state.wardrobe.unshift(item);
     saveWardrobe();
     renderWardrobe();
@@ -183,11 +185,11 @@ function bindWardrobeTools() {
 }
 
 function bindOutfitFlow() {
-  $("#outfitForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  const runRecommendation = async (event) => {
+    event?.preventDefault();
     const locationName = cleanName($("#weatherLocation").value) || "Seoul";
     const concept = $("#outfitConcept").value;
-    const requestId = crypto.randomUUID();
+    const requestId = createId();
 
     state.outfitRequestId = requestId;
     state.outfitLoading = true;
@@ -195,6 +197,7 @@ function bindOutfitFlow() {
     state.outfitInspiration = generateInspirations(state.outfitWeather, concept);
     state.outfitRecommendations = buildOutfitRecommendations(concept, state.outfitWeather);
     renderOutfitBoard({ loading: true });
+    toast("코디 후보를 찾고 있어요.");
 
     const quickTimer = window.setTimeout(() => {
       if (state.outfitRequestId !== requestId || !state.outfitLoading) return;
@@ -219,9 +222,13 @@ function bindOutfitFlow() {
     state.outfitLoading = false;
     state.outfitWeather = weather;
     state.outfitInspiration = inspirations.length ? inspirations : generateInspirations(weather, concept);
+    await Promise.race([ensureWardrobeVisualProfiles(), wait(700)]);
     state.outfitRecommendations = buildOutfitRecommendations(concept, state.outfitWeather);
     renderOutfitBoard();
-  });
+  };
+
+  $("#outfitForm")?.addEventListener("submit", runRecommendation);
+  $("#outfitBtn")?.addEventListener("click", runRecommendation);
 }
 
 function drawOrderImage() {
@@ -354,7 +361,7 @@ function makeTextCandidates() {
 function addCandidate(data) {
   const inferred = inferFromText(`${data.brand || ""} ${data.name || ""} ${data.option || ""}`);
   const candidate = {
-    id: crypto.randomUUID(),
+    id: createId(),
     image: data.image || "",
     name: data.name || "",
     brand: data.brand || inferred.brand,
@@ -574,10 +581,11 @@ function inferStoreFromUrl(url) {
   return "generic";
 }
 
-function registerCandidate(id) {
+async function registerCandidate(id) {
   const index = state.queue.findIndex((candidate) => candidate.id === id);
   if (index < 0) return;
   const [candidate] = state.queue.splice(index, 1);
+  candidate.visual = await createItemVisualProfile(candidate);
   state.wardrobe.unshift(normalizeItem(candidate));
   saveWardrobe();
   renderQueue();
@@ -802,6 +810,7 @@ function scoreOutfitPair(top, bottom, concept, weather) {
   score += scoreConceptFit(top, concept);
   score += scoreConceptFit(bottom, concept);
   score += scoreColorHarmony(top, bottom);
+  score += scoreInspirationSimilarity(top, bottom) * 1.7;
   if (top.image) score += 1;
   if (bottom.image) score += 1;
   return score;
@@ -854,7 +863,8 @@ function buildOutfitReason(top, bottom, concept, weather) {
   const temp = Math.round(Number(weather?.temperature ?? 22));
   const topColor = top.color || "상의 색감";
   const bottomColor = bottom.color || "하의 색감";
-  return `${temp}°C 날씨에 ${top.name}의 ${topColor} 톤과 ${bottom.name}의 ${bottomColor} 톤이 잘 맞고, ${concept} 분위기에 가까운 조합입니다.`;
+  const visualReason = scoreInspirationSimilarity(top, bottom) >= 3 ? "참고 이미지와 색감/밝기 느낌도 가까워서" : "계절감과 컨셉을 우선으로 맞춰서";
+  return `${temp}°C 날씨에 ${top.name}의 ${topColor} 톤과 ${bottom.name}의 ${bottomColor} 톤이 잘 맞고, ${visualReason} ${concept} 분위기에 가까운 조합입니다.`;
 }
 
 function getItemCategory(item) {
@@ -904,7 +914,51 @@ function generateInspirations(weather, concept) {
 
   return [weatherHint, ...(base[concept] || base["캐주얼"])]
     .slice(0, 3)
-    .map(([title, description, image]) => ({ title, description, image, source: "fallback" }));
+    .map(([title, description, image], index) => ({
+      title,
+      description,
+      image,
+      visual: styleVisualProfile(concept, temp, index),
+      source: "fallback",
+    }));
+}
+
+function styleVisualProfile(concept, temp, index) {
+  const warm = temp >= 27 ? 0.58 : temp <= 12 ? 0.42 : 0.5;
+  const base = {
+    "캐주얼": [
+      { families: ["화이트/아이보리", "블루/데님", "블랙"], brightness: 0.66, saturation: 0.34, warmth: warm },
+      { families: ["블루/데님", "화이트/아이보리", "그레이"], brightness: 0.62, saturation: 0.38, warmth: warm },
+      { families: ["블랙", "블루/데님", "화이트/아이보리"], brightness: 0.45, saturation: 0.32, warmth: warm },
+    ],
+    "포멀": [
+      { families: ["화이트/아이보리", "블랙", "그레이"], brightness: 0.55, saturation: 0.18, warmth: 0.48 },
+      { families: ["네이비", "화이트/아이보리", "그레이"], brightness: 0.5, saturation: 0.2, warmth: 0.45 },
+      { families: ["블랙", "그레이", "화이트/아이보리"], brightness: 0.42, saturation: 0.16, warmth: 0.42 },
+    ],
+    "미니멀": [
+      { families: ["화이트/아이보리", "블랙", "그레이"], brightness: 0.58, saturation: 0.12, warmth: 0.48 },
+      { families: ["그레이", "블랙", "화이트/아이보리"], brightness: 0.5, saturation: 0.12, warmth: 0.45 },
+      { families: ["네이비", "화이트/아이보리", "블랙"], brightness: 0.48, saturation: 0.18, warmth: 0.42 },
+    ],
+    "스트릿": [
+      { families: ["블랙", "그레이", "블루/데님"], brightness: 0.36, saturation: 0.28, warmth: 0.42 },
+      { families: ["블루/데님", "블랙", "그레이"], brightness: 0.43, saturation: 0.35, warmth: 0.44 },
+      { families: ["카키/올리브", "블랙", "그레이"], brightness: 0.4, saturation: 0.32, warmth: 0.46 },
+    ],
+    "데이트": [
+      { families: ["화이트/아이보리", "블루/데님", "베이지"], brightness: 0.68, saturation: 0.25, warmth: 0.56 },
+      { families: ["베이지", "화이트/아이보리", "블루/데님"], brightness: 0.62, saturation: 0.22, warmth: 0.6 },
+      { families: ["그레이", "블루/데님", "화이트/아이보리"], brightness: 0.56, saturation: 0.2, warmth: 0.5 },
+    ],
+    "출근": [
+      { families: ["화이트/아이보리", "네이비", "블랙"], brightness: 0.52, saturation: 0.18, warmth: 0.45 },
+      { families: ["그레이", "블랙", "화이트/아이보리"], brightness: 0.48, saturation: 0.14, warmth: 0.45 },
+      { families: ["네이비", "그레이", "화이트/아이보리"], brightness: 0.45, saturation: 0.18, warmth: 0.43 },
+    ],
+  };
+  const profiles = base[concept] || base["캐주얼"];
+  return profiles[index % profiles.length];
 }
 
 function inspirationImagesFor(concept) {
@@ -960,9 +1014,188 @@ function fallbackWeather(locationName, error = "") {
   };
 }
 
-function normalizeItem(data) {
+async function ensureWardrobeVisualProfiles() {
+  const targets = state.wardrobe.filter((item) => !item.visual).slice(0, 12);
+  if (!targets.length) return;
+  await Promise.all(
+    targets.map(async (item) => {
+      item.visual = await createItemVisualProfile(item);
+    })
+  );
+  saveWardrobe();
+}
+
+async function createItemVisualProfile(item) {
+  const imageProfile = await extractImageVisualProfile(item.image);
+  const textProfile = buildTextVisualProfile(item);
+  return mergeVisualProfiles(imageProfile, textProfile);
+}
+
+async function extractImageVisualProfile(src) {
+  if (!src) return null;
+  try {
+    const img = await loadImageForAnalysis(src);
+    const canvas = document.createElement("canvas");
+    const size = 28;
+    canvas.width = size;
+    canvas.height = size;
+    const localCtx = canvas.getContext("2d", { willReadFrequently: true });
+    localCtx.drawImage(img, 0, 0, size, size);
+    const { data } = localCtx.getImageData(0, 0, size, size);
+    const counts = {};
+    let brightness = 0;
+    let saturation = 0;
+    let warmth = 0;
+    let samples = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const alpha = data[i + 3];
+      if (alpha < 20) continue;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      if (max > 242 && min > 235) continue;
+      const family = colorFamilyFromRgb(r, g, b);
+      counts[family] = (counts[family] || 0) + 1;
+      brightness += max / 255;
+      saturation += max ? (max - min) / max : 0;
+      warmth += (r + 20) / (b + 40);
+      samples += 1;
+    }
+
+    if (!samples) return null;
+    const families = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([family]) => family);
+    return {
+      families,
+      brightness: roundProfileValue(brightness / samples),
+      saturation: roundProfileValue(saturation / samples),
+      warmth: roundProfileValue(Math.min(1, warmth / samples / 2.2)),
+      source: "image",
+    };
+  } catch (error) {
+    console.warn("Image visual analysis skipped", error);
+    return null;
+  }
+}
+
+function loadImageForAnalysis(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = proxiedImageSrc(src);
+  });
+}
+
+function proxiedImageSrc(src) {
+  if (!src || src.startsWith("data:") || src.startsWith(location.origin)) return src;
+  if (/^https?:\/\//i.test(src) && location.protocol !== "file:") {
+    return `/api/image-proxy?url=${encodeURIComponent(src)}`;
+  }
+  return src;
+}
+
+function buildTextVisualProfile(item) {
+  const inferred = inferFromText([item.name, item.option, item.color, item.style].join(" "));
+  const color = inferred.color || item.color || "그레이";
+  const brightnessMap = {
+    "블랙": 0.2,
+    "네이비": 0.28,
+    "그레이": 0.48,
+    "블루/데님": 0.5,
+    "카키/올리브": 0.42,
+    "브라운": 0.38,
+    "베이지": 0.68,
+    "화이트/아이보리": 0.86,
+  };
+  const warmthMap = {
+    "브라운": 0.74,
+    "베이지": 0.68,
+    "레드/버건디": 0.72,
+    "핑크": 0.7,
+    "카키/올리브": 0.56,
+    "화이트/아이보리": 0.58,
+    "블루/데님": 0.34,
+    "네이비": 0.28,
+  };
   return {
-    id: data.id || crypto.randomUUID(),
+    families: [color],
+    brightness: brightnessMap[color] ?? 0.5,
+    saturation: /블랙|화이트|아이보리|그레이/.test(color) ? 0.12 : 0.32,
+    warmth: warmthMap[color] ?? 0.5,
+    source: "text",
+  };
+}
+
+function mergeVisualProfiles(imageProfile, textProfile) {
+  if (!imageProfile) return textProfile;
+  const families = [...new Set([...imageProfile.families, ...textProfile.families])].slice(0, 3);
+  return {
+    families,
+    brightness: roundProfileValue(imageProfile.brightness * 0.75 + textProfile.brightness * 0.25),
+    saturation: roundProfileValue(imageProfile.saturation * 0.75 + textProfile.saturation * 0.25),
+    warmth: roundProfileValue(imageProfile.warmth * 0.75 + textProfile.warmth * 0.25),
+    source: imageProfile.source,
+  };
+}
+
+function scoreInspirationSimilarity(top, bottom) {
+  const inspirationProfiles = state.outfitInspiration.map((item) => item.visual).filter(Boolean);
+  if (!inspirationProfiles.length) return 0;
+  const pairProfile = mergePairVisualProfile(top.visual || buildTextVisualProfile(top), bottom.visual || buildTextVisualProfile(bottom));
+  return Math.max(...inspirationProfiles.map((profile) => compareVisualProfiles(pairProfile, profile)));
+}
+
+function mergePairVisualProfile(topProfile, bottomProfile) {
+  return {
+    families: [...new Set([...(topProfile.families || []), ...(bottomProfile.families || [])])].slice(0, 4),
+    brightness: roundProfileValue((topProfile.brightness + bottomProfile.brightness) / 2),
+    saturation: roundProfileValue((topProfile.saturation + bottomProfile.saturation) / 2),
+    warmth: roundProfileValue((topProfile.warmth + bottomProfile.warmth) / 2),
+  };
+}
+
+function compareVisualProfiles(a, b) {
+  const familyHits = (a.families || []).filter((family) => (b.families || []).includes(family)).length;
+  const brightness = 1 - Math.min(1, Math.abs((a.brightness ?? 0.5) - (b.brightness ?? 0.5)) / 0.8);
+  const saturation = 1 - Math.min(1, Math.abs((a.saturation ?? 0.25) - (b.saturation ?? 0.25)) / 0.8);
+  const warmth = 1 - Math.min(1, Math.abs((a.warmth ?? 0.5) - (b.warmth ?? 0.5)) / 0.8);
+  return familyHits * 1.8 + brightness + saturation + warmth;
+}
+
+function colorFamilyFromRgb(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max < 55) return "블랙";
+  if (max > 210 && min > 185) return "화이트/아이보리";
+  if (max - min < 28) return "그레이";
+  if (b > r + 20 && b > g + 10) return "블루/데님";
+  if (g > r && g > b) return "카키/올리브";
+  if (r > 150 && g < 120 && b < 120) return "레드/버건디";
+  if (r > 170 && b > 130 && g < 150) return "핑크";
+  if (r > g + 20 && g > b + 10) return g > 135 ? "베이지" : "브라운";
+  if (b > 80 && r < 90) return "네이비";
+  return "그레이";
+}
+
+function roundProfileValue(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function normalizeItem(data) {
+  const inferred = inferFromText(`${data.brand || ""} ${data.name || ""} ${data.option || ""} ${data.style || ""}`);
+  return {
+    id: data.id || createId(),
     image: data.image || "",
     name: cleanName(data.name || "이름 없는 옷"),
     brand: cleanName(data.brand || ""),
@@ -970,13 +1203,20 @@ function normalizeItem(data) {
     price: cleanName(data.price || ""),
     store: data.store || "generic",
     productUrl: data.productUrl || "",
-    category: data.category || "기타",
-    color: cleanName(data.color || ""),
-    style: cleanName(data.style || ""),
-    season: data.season || "사계절",
+    category: data.category && data.category !== "기타" ? data.category : inferred.category,
+    color: cleanName(data.color || inferred.color || ""),
+    style: cleanName(data.style || inferred.style || ""),
+    season: data.season && (data.season !== "사계절" || inferred.season === "사계절") ? data.season : inferred.season,
+    visual: data.visual || null,
     source: data.source || "",
     createdAt: new Date().toISOString(),
   };
+}
+
+function createId() {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function parseOrderItems(text, store) {
@@ -1249,14 +1489,6 @@ function hasFashionKeyword(value) {
 
 function inferFromText(text) {
   const lower = text.toLowerCase();
-  const rules = [
-    [/패딩|코트|자켓|재킷|점퍼|바람막이|후드집업|블레이저|cardigan|jacket|coat|parka/, "아우터"],
-    [/팬츠|바지|데님|진|슬랙스|쇼츠|반바지|스커트|pants|jeans|shorts|slacks|skirt/, "하의"],
-    [/스니커즈|운동화|구두|부츠|로퍼|샌들|shoes|sneakers|boots|loafer|sandal/, "신발"],
-    [/티셔츠|반팔|긴팔|셔츠|니트|맨투맨|후디|후드|탑|블라우스|tee|shirt|knit|sweatshirt|hoodie|blouse/, "상의"],
-    [/백팩|가방|토트|크로스백|bag|backpack|tote/, "가방"],
-    [/캡|비니|모자|벨트|머플러|hat|cap|beanie|belt|scarf/, "모자/액세서리"],
-  ];
   const colorRules = [
     [/블랙|검정|black|bk/, "블랙"],
     [/화이트|흰|white|ivory|아이보리|cream|크림/, "화이트/아이보리"],
@@ -1280,7 +1512,7 @@ function inferFromText(text) {
   ];
 
   return {
-    category: matchRule(lower, rules) || "기타",
+    category: inferCategory(lower),
     color: matchRule(lower, colorRules) || "",
     brand: matchRule(lower, brandRules) || "",
     style: /슬랙스|셔츠|블레이저|로퍼|coat|shirt|slacks|loafer/.test(lower)
@@ -1288,12 +1520,46 @@ function inferFromText(text) {
       : /후드|맨투맨|데님|스니커즈|hoodie|sneakers|denim/.test(lower)
         ? "캐주얼"
         : "",
-    season: /반팔|쇼츠|반바지|샌들|shorts|sandal/.test(lower)
-      ? "여름"
-      : /패딩|코트|니트|머플러|padding|coat|knit|scarf/.test(lower)
-        ? "겨울"
-        : "사계절",
+    season: inferSeason(lower),
   };
+}
+
+function inferCategory(lower) {
+  const scores = {
+    "상의": 0,
+    "하의": 0,
+    "신발": 0,
+    "아우터": 0,
+    "가방": 0,
+    "모자/액세서리": 0,
+  };
+  const add = (category, regex, weight = 1) => {
+    if (regex.test(lower)) scores[category] += weight;
+  };
+
+  add("상의", /탱크\s*탑|탱크탑|나시|민소매|슬리브리스|sleeveless|tank\s*top/, 7);
+  add("상의", /티셔츠|반팔|긴팔|셔츠|니트|맨투맨|후디|후드|블라우스|카라|폴로|tee|t-shirt|shirt|knit|sweatshirt|hoodie|blouse|top\b/, 4);
+  add("하의", /팬츠|바지|데님|청바지|진|슬랙스|쇼츠|반바지|스커트|조거|와이드\s*팬츠|pants|jeans|denim|shorts|slacks|skirt|jogger/, 5);
+  add("신발", /스니커즈|운동화|구두|부츠|로퍼|샌들|더비슈즈|슈즈|shoes|sneakers|boots|loafer|sandal|derby/, 6);
+  add("아우터", /패딩|코트|자켓|재킷|점퍼|바람막이|후드집업|블레이저|가디건|cardigan|jacket|coat|parka|blazer/, 6);
+  add("가방", /백팩|가방|토트|크로스백|bag|backpack|tote/, 4);
+  add("모자/액세서리", /캡|비니|모자|벨트|머플러|hat|cap|beanie|belt|scarf/, 4);
+
+  const best = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
+  return best && best[1] > 0 ? best[0] : "기타";
+}
+
+function inferSeason(lower) {
+  if (/탱크\s*탑|탱크탑|나시|민소매|슬리브리스|반팔|쇼츠|반바지|샌들|린넨|메쉬|쿨|시어서커|sleeveless|tank\s*top|shorts|sandal|linen|mesh|summer/.test(lower)) {
+    return "여름";
+  }
+  if (/패딩|다운|헤비|두꺼운|기모|플리스|울|모직|모헤어|알파카|부클|케이블|터틀넥|목폴라|머플러|padding|down|heavy|fleece|wool|mohair|alpaca|boucle|turtleneck|winter/.test(lower)) {
+    return "겨울";
+  }
+  if (/니트|가디건|맨투맨|후드|후디|긴팔|자켓|재킷|블레이저|셔츠|knit|cardigan|sweatshirt|hoodie|long\s*sleeve|jacket|blazer|shirt/.test(lower)) {
+    return "봄/가을";
+  }
+  return "사계절";
 }
 
 function matchRule(text, rules) {

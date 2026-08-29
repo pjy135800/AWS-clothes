@@ -42,6 +42,11 @@ createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === "/api/image-proxy") {
+      await proxyImage(url.searchParams, res);
+      return;
+    }
+
     const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
     const target = normalize(join(root, pathname));
     if (!target.startsWith(root)) {
@@ -50,7 +55,10 @@ createServer(async (req, res) => {
     }
 
     const file = await readFile(target);
-    res.writeHead(200, { "content-type": contentTypes[extname(target)] || "application/octet-stream" });
+    res.writeHead(200, {
+      "content-type": contentTypes[extname(target)] || "application/octet-stream",
+      "cache-control": "no-store",
+    });
     res.end(file);
   } catch (error) {
     if (error.code === "ENOENT") {
@@ -531,8 +539,82 @@ function buildStyleCards(concept, temp, images, source) {
     title,
     description: descriptions[index],
     image: images[index % images.length],
+    visual: styleVisualProfile(concept, temp, index),
     source,
   }));
+}
+
+async function proxyImage(params, res) {
+  const rawUrl = clean(params.get("url"));
+  try {
+    const imageUrl = new URL(rawUrl);
+    if (!/^https?:$/.test(imageUrl.protocol)) throw new Error("Only http images are allowed");
+    if (/^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.|192\.168\.)/i.test(imageUrl.hostname)) {
+      throw new Error("Private image hosts are blocked");
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(imageUrl.href, {
+      signal: controller.signal,
+      headers: {
+        "accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      },
+    }).finally(() => clearTimeout(timer));
+
+    if (!response.ok) throw new Error(`Image fetch failed ${response.status}`);
+    const type = response.headers.get("content-type") || "image/jpeg";
+    if (!type.startsWith("image/")) throw new Error("URL is not an image");
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.writeHead(200, {
+      "content-type": type,
+      "cache-control": "public, max-age=86400",
+      "access-control-allow-origin": "*",
+    });
+    res.end(buffer);
+  } catch (error) {
+    sendJson(res, 400, { error: "Image proxy failed", message: error.message });
+  }
+}
+
+function styleVisualProfile(concept, temp, index) {
+  const warm = temp >= 27 ? 0.58 : temp <= 12 ? 0.42 : 0.5;
+  const base = {
+    "캐주얼": [
+      { families: ["화이트/아이보리", "블루/데님", "블랙"], brightness: 0.66, saturation: 0.34, warmth: warm },
+      { families: ["블루/데님", "화이트/아이보리", "그레이"], brightness: 0.62, saturation: 0.38, warmth: warm },
+      { families: ["블랙", "블루/데님", "화이트/아이보리"], brightness: 0.45, saturation: 0.32, warmth: warm },
+    ],
+    "포멀": [
+      { families: ["화이트/아이보리", "블랙", "그레이"], brightness: 0.55, saturation: 0.18, warmth: 0.48 },
+      { families: ["네이비", "화이트/아이보리", "그레이"], brightness: 0.5, saturation: 0.2, warmth: 0.45 },
+      { families: ["블랙", "그레이", "화이트/아이보리"], brightness: 0.42, saturation: 0.16, warmth: 0.42 },
+    ],
+    "미니멀": [
+      { families: ["화이트/아이보리", "블랙", "그레이"], brightness: 0.58, saturation: 0.12, warmth: 0.48 },
+      { families: ["그레이", "블랙", "화이트/아이보리"], brightness: 0.5, saturation: 0.12, warmth: 0.45 },
+      { families: ["네이비", "화이트/아이보리", "블랙"], brightness: 0.48, saturation: 0.18, warmth: 0.42 },
+    ],
+    "스트릿": [
+      { families: ["블랙", "그레이", "블루/데님"], brightness: 0.36, saturation: 0.28, warmth: 0.42 },
+      { families: ["블루/데님", "블랙", "그레이"], brightness: 0.43, saturation: 0.35, warmth: 0.44 },
+      { families: ["카키/올리브", "블랙", "그레이"], brightness: 0.4, saturation: 0.32, warmth: 0.46 },
+    ],
+    "데이트": [
+      { families: ["화이트/아이보리", "블루/데님", "베이지"], brightness: 0.68, saturation: 0.25, warmth: 0.56 },
+      { families: ["베이지", "화이트/아이보리", "블루/데님"], brightness: 0.62, saturation: 0.22, warmth: 0.6 },
+      { families: ["그레이", "블루/데님", "화이트/아이보리"], brightness: 0.56, saturation: 0.2, warmth: 0.5 },
+    ],
+    "출근": [
+      { families: ["화이트/아이보리", "네이비", "블랙"], brightness: 0.52, saturation: 0.18, warmth: 0.45 },
+      { families: ["그레이", "블랙", "화이트/아이보리"], brightness: 0.48, saturation: 0.14, warmth: 0.45 },
+      { families: ["네이비", "그레이", "화이트/아이보리"], brightness: 0.45, saturation: 0.18, warmth: 0.43 },
+    ],
+  };
+  const profiles = base[concept] || base["캐주얼"];
+  return profiles[index % profiles.length];
 }
 
 function fallbackStyleImages(concept) {
